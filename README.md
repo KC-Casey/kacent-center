@@ -9,9 +9,10 @@
 - 添加 Windows `.exe` 或 macOS `.app`，发现没有监听端口的运行中应用，统一显示、关联和请求退出。退出中心或删除应用记录时保留桌面应用运行。
 - 从“发现服务”按 TCP 监听和 UDP 绑定端口查看已有进程，筛选系统／非系统／待确认项，选择接入并添加备注、文档。外部进程退出平台后继续运行。
 - 启动、停止和重启受管服务，分开展示进程状态、真实端口和预期端口冲突。停止服务不结束其独立终端或 Agent 会话。
-- 每个服务可打开多个真实 PTY 终端。内置 Codex、Claude Code、Gemini CLI 启动配置，也可使用自定义 CLI。工具沿用自身安装与登录配置。
+- 每个服务可打开多个真实 PTY 终端。内置 Codex、Claude Code、Gemini CLI、OpenCode、Hermes Agent、ZCode（Z.ai）、Kimi Code、Aider 和 GitHub Copilot CLI 启动配置，也可使用自定义 CLI。工具沿用自身安装与登录配置。
 - 为服务保存备注和多篇 Markdown 文档，支持编辑、预览与导出。切换服务保留文档草稿；文档预览不执行原始 HTML。
 - 深色、浅色和跟随系统主题；关闭窗口留在托盘，选择“停止托管服务并退出”后清理命令服务、前端服务、静态预览与独立终端，保留桌面应用。
+- 终端默认独立跟随系统深浅外观，可选择预设或自定义背景、文字、光标、选区和 ANSI 颜色，并调整字体、字号、行高与光标样式；保存后无需重建会话。
 
 首次启动是空服务列表，不自动创建演示服务、运行命令或安装 Agent。
 
@@ -109,6 +110,29 @@ macOS 的 `CI=true` 会跳过 DMG 的 Finder 外观自动化，保留应用与 A
 4. 在“AI 工具”中配置 CLI 路径和参数。参数列表每行一个完整参数，保留参数内部空格，不自动拼接成未转义的 shell 命令。
 5. 从服务顶部“打开 Agent”选择工具。关闭一个终端只影响该会话；删除服务会明确提示将结束的全部会话。
 6. 文档默认保存到本机应用数据库；需要让 Agent 读取时导出 Markdown，再在终端中引用文件路径。
+
+### 终端外观与 AI 工具
+
+从左侧“设置”或终端标题栏的外观按钮进入设置。工作台主题与终端配色各自独立；终端的“跟随系统”直接响应操作系统深浅模式，即使工作台被固定为浅色，系统深色时终端仍使用深色。
+
+可选深色、浅色、Dracula、Solarized 深色，或自定义配色。支持背景、文字、光标、选区、16 种 ANSI 颜色、等宽字体、9–32 字号、1–2 倍行高、三种光标形状与闪烁；下方预览不执行任何命令。点击“保存设置”应用到现有终端，输入、输出缓冲和进程保持不变；关闭未保存草稿时可选择继续编辑或放弃。系统模式不读取 Terminal、iTerm2、Windows Terminal 等应用的配置文件。工具自行绘制的真彩色界面仍由该工具自己的主题设置决定。
+
+普通终端的 bash、zsh、sh/dash 默认提示符显示当前路径，执行 `cd` 后自动更新；仍跳过用户启动脚本以保持服务环境隔离。服务环境中显式配置的提示符优先，Agent 界面由工具自身控制。升级后需新建普通终端才能应用新的默认提示符，已有 shell 不会被重启。
+
+输出位于底部时自动跟随；手动上翻后保留历史阅读位置，点击“回到最新输出”恢复跟随。展开、拖动分隔线或改变字号时，终端按工作区实际剩余高度重新计算行列，保持最后一行可见。回滚区保留最近 5000 行历史；后端缓存溢出时会明确提示历史缺口，与界面底部裁切是不同情况。
+
+“AI 工具”提供九项默认启动配置。新增预设对应的启动命令如下，均以无附加参数的交互模式打开：
+
+| 工具 | 命令 | 官方命令资料 |
+| --- | --- | --- |
+| OpenCode | `opencode` | [官方 CLI 文档](https://opencode.ai/v2/docs/cli) |
+| Hermes Agent | `hermes` | [Nous Research 官方文档](https://hermes-agent.nousresearch.com/docs/user-guide/cli) |
+| ZCode（Z.ai） | `zcode` | [Z.ai 官方仓库](https://github.com/zai-org/ZCode) |
+| Kimi Code | `kimi` | [Moonshot AI 命令参考](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/kimi-command.md) |
+| Aider | `aider` | [官方用法](https://aider.chat/docs/usage.html) |
+| GitHub Copilot CLI | `copilot` | [GitHub 官方命令参考](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) |
+
+预设不会自动安装、登录或运行工具；启动前仍需本机存在对应命令。ZCode 预设指 Z.ai 的命令行版本，桌面版安装不保证提供 `zcode` 命令；必要时填写对应 CLI 的完整路径。升级会一次性补入缺少的新预设，保留原有工具的路径、参数和环境；删除预设后重开不会自动恢复，仍可从“添加常用工具”手动加回。
 
 ### 发现与接入现有服务
 

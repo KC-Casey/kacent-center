@@ -16,12 +16,12 @@ import ExternalServiceView from './components/ExternalServiceView';
 import Modal from './components/Modal';
 import ServiceDrawer from './components/ServiceDrawer';
 import TerminalPanel from './components/TerminalPanel';
-import { trapDialogFocus } from './components/focusTrap';
+import SettingsDrawer from './components/SettingsDrawer';
+import { defaultTerminalAppearance } from './terminalAppearance';
 import type { AgentAvailability, AgentProfile, ApplicationSnapshot, AttachApplicationRequest, AttachExternalRequest, Bootstrap, DiscoveredApplication, DiscoveredProcess, DiscoverySnapshot, Preferences, ServiceConfig, ServiceDocument, ServiceRuntime, TerminalSession } from './types';
 import './styles.css';
 
 type MainTab = 'overview' | 'environment' | 'documents';
-type ThemeChoice = Preferences['theme'];
 type ServiceOperation = 'start' | 'stop' | 'restart';
 type Drawer = { kind: 'service'; mode: 'create' | 'edit' } | { kind: 'external-edit' } | { kind: 'attach-external'; process: DiscoveredProcess } | { kind: 'attach-application'; application: DiscoveredApplication } | { kind: 'agents' } | { kind: 'settings' } | null;
 type ServiceKindFilter = 'all' | ServiceConfig['kind'];
@@ -114,7 +114,7 @@ export default function App() {
   const [services, setServicesState] = useState<ServiceConfig[]>([]);
   const servicesRef = useRef<ServiceConfig[]>([]);
   const [agents, setAgents] = useState<AgentProfile[]>([]);
-  const [preferences, setPreferences] = useState<Preferences>({ theme: 'system' });
+  const [preferences, setPreferences] = useState<Preferences>(() => ({ theme: 'system', terminal: defaultTerminalAppearance() }));
   const [runtimes, setRuntimesState] = useState<Record<string, ServiceRuntime>>({});
   const runtimeRef = useRef<Record<string, ServiceRuntime>>({});
   const runIdGuard = useRef<Record<string, string>>({});
@@ -171,7 +171,8 @@ export default function App() {
   const [quitBusy, setQuitBusy] = useState(false);
   const [serviceDrawerDirty, setServiceDrawerDirty] = useState(false);
   const [agentDrawerDirty, setAgentDrawerDirty] = useState(false);
-  const configDraftsRef = useRef({ service: false, agent: false });
+  const [settingsDrawerDirty, setSettingsDrawerDirty] = useState(false);
+  const configDraftsRef = useRef({ service: false, agent: false, settings: false });
   const [systemTheme, setSystemTheme] = useState<'dark' | 'light'>(() => window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 
   const activeService = services.find((service) => service.id === activeServiceId) ?? null;
@@ -212,6 +213,11 @@ export default function App() {
   const reportServiceDrawerDirty = useCallback((dirty: boolean) => {
     configDraftsRef.current = { ...configDraftsRef.current, service: dirty };
     setServiceDrawerDirty(dirty);
+  }, []);
+
+  const reportSettingsDrawerDirty = useCallback((dirty: boolean) => {
+    configDraftsRef.current = { ...configDraftsRef.current, settings: dirty };
+    setSettingsDrawerDirty(dirty);
   }, []);
 
   const reportAgentDrawerDirty = useCallback((dirty: boolean) => {
@@ -440,7 +446,7 @@ export default function App() {
 
   const handleQuitRequest = useCallback(() => {
     if (Object.values(documentDraftsRef.current).some(isDocumentDirty)
-      || configDraftsRef.current.service || configDraftsRef.current.agent) {
+      || configDraftsRef.current.service || configDraftsRef.current.agent || configDraftsRef.current.settings) {
       setQuitPrompt(true);
     } else {
       void api.quit().catch((reason: unknown) => setGlobalError(`退出应用失败：${errorText(reason)}`));
@@ -457,7 +463,7 @@ export default function App() {
     const beforeUnload = (event: BeforeUnloadEvent) => {
       // 浏览器退出提示同时覆盖父级文档草稿与抽屉中的配置草稿，避免关闭窗口绕过应用内保存流程。
       if (Object.values(documentDraftsRef.current).some(isDocumentDirty)
-        || configDraftsRef.current.service || configDraftsRef.current.agent) {
+        || configDraftsRef.current.service || configDraftsRef.current.agent || configDraftsRef.current.settings) {
         event.preventDefault();
         event.returnValue = '';
       }
@@ -599,15 +605,11 @@ export default function App() {
     await attachCandidateToService(launchCandidates.serviceId, candidate);
   };
 
-  const savePreferences = async (theme: ThemeChoice) => {
-    const previous = preferences;
-    setPreferences({ theme });
-    try {
-      setPreferences(await api.savePreferences({ theme }));
-    } catch (reason) {
-      setPreferences(previous);
-      setGlobalError(`主题设置保存失败：${errorText(reason)}`);
-    }
+  const savePreferences = async (next: Preferences): Promise<Preferences> => {
+    // 整体保存偏好，切换工作台主题时不能丢失终端的独立外观配置。
+    const saved = await api.savePreferences(next);
+    setPreferences(saved);
+    return saved;
   };
 
   const mergeSession = (session: TerminalSession) => {
@@ -1001,6 +1003,7 @@ export default function App() {
   const dirtyConfigLabels = [
     ...(serviceDrawerDirty || configDraftsRef.current.service ? ['服务配置'] : []),
     ...(agentDrawerDirty || configDraftsRef.current.agent ? ['AI 工具配置'] : []),
+    ...(settingsDrawerDirty || configDraftsRef.current.settings ? ['外观设置'] : []),
   ];
   const hasDirtyConfig = dirtyConfigLabels.length > 0;
   const activeOperation = activeService ? operationByService[activeService.id] : undefined;
@@ -1037,8 +1040,8 @@ export default function App() {
 
   const saveQuitAndExit = async () => {
     // 此动作只用于没有配置草稿时；配置可能尚未通过表单校验，不能在退出时静默提交。
-    if (configDraftsRef.current.service || configDraftsRef.current.agent) {
-      setGlobalError('服务或 AI 工具配置仍有未保存修改，请返回抽屉手动保存或明确放弃。');
+    if (configDraftsRef.current.service || configDraftsRef.current.agent || configDraftsRef.current.settings) {
+      setGlobalError('服务、AI 工具或外观设置仍有未保存修改，请返回抽屉手动保存或明确放弃。');
       return;
     }
     setQuitBusy(true);
@@ -1300,7 +1303,7 @@ export default function App() {
                   />
                 </>}
               </div>
-              <TerminalPanel serviceId={activeService.id} sessions={activeSessions} theme={resolvedTheme} onCreate={() => void openOrdinaryTerminal()} onClose={(sessionId) => void closeTerminal(sessionId)} createDisabled={!isDesktop || !activeCanCreateSession} createDisabledReason={!isDesktop ? '终端操作请使用桌面应用' : !activeCanCreateSession ? '请先补充工作目录' : undefined} initiallyCollapsed={activeService.kind === 'desktopApp' || activeService.kind === 'staticSite'} />
+              <TerminalPanel serviceId={activeService.id} sessions={activeSessions} appearance={preferences.terminal} systemTheme={systemTheme} onOpenAppearance={() => setDrawer({ kind: 'settings' })} onCreate={() => void openOrdinaryTerminal()} onClose={(sessionId) => void closeTerminal(sessionId)} createDisabled={!isDesktop || !activeCanCreateSession} createDisabledReason={!isDesktop ? '终端操作请使用桌面应用' : !activeCanCreateSession ? '请先补充工作目录' : undefined} initiallyCollapsed={activeService.kind === 'desktopApp' || activeService.kind === 'staticSite'} />
             </div>
           </> : <>
             {isPreview && <div className="preview-banner"><Monitor size={15} /><span>界面预览，运行操作请使用桌面应用</span><span className="preview-banner-spacer" /><small>本地预览数据独立保存</small></div>}
@@ -1376,8 +1379,9 @@ export default function App() {
       />}
       {drawer?.kind === 'settings' && <SettingsDrawer
         preferences={preferences}
-        resolvedTheme={resolvedTheme}
-        onSelectTheme={(theme) => void savePreferences(theme)}
+        systemTheme={systemTheme}
+        onSave={savePreferences}
+        onDirtyChange={reportSettingsDrawerDirty}
         onClose={() => setDrawer(null)}
       />}
 
@@ -1635,24 +1639,5 @@ function EnvironmentView({ service, onEdit, onCopy }: { service: ServiceConfig; 
       {envEntries(service.env).length ? <div className="environment-table" role="table" aria-label="环境变量"><div className="env-table-head" role="row"><span role="columnheader">名称</span><span role="columnheader">值</span><span role="columnheader" /></div>{envEntries(service.env).map(([key, value]) => <div className="env-table-row" role="row" key={key}><code role="cell">{key}</code><code role="cell" title={value}>{value}</code><button className="icon-button small" type="button" aria-label={`复制环境变量 ${key}`} title="复制变量值" onClick={() => onCopy(value, key)}><Copy size={14} /></button></div>)}</div> : <div className="empty-inline"><Activity size={18} /><span>未配置环境变量。</span></div>}
     </section>
     <div className="environment-footnote"><Activity size={15} /><span>环境仅用于启动进程，不会自动安装依赖或修改项目文件。</span></div>
-  </div>;
-}
-
-function SettingsDrawer({ preferences, resolvedTheme, onSelectTheme, onClose }: { preferences: Preferences; resolvedTheme: 'dark' | 'light'; onSelectTheme: (theme: ThemeChoice) => void; onClose: () => void }) {
-  const drawerRef = useRef<HTMLElement>(null);
-  useEffect(() => trapDialogFocus(drawerRef), []);
-  const choices: Array<{ value: ThemeChoice; title: string; detail: string; icon: typeof Monitor }> = [
-    { value: 'system', title: '跟随系统', detail: `当前使用${resolvedTheme === 'dark' ? '深色' : '浅色'}外观`, icon: Monitor },
-    { value: 'dark', title: '深色主题', detail: '适合低亮度环境', icon: Activity },
-    { value: 'light', title: '浅色主题', detail: '明亮清晰的工作台', icon: Activity },
-  ];
-  return <div className="drawer-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-    <aside ref={drawerRef} className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <header className="drawer-header"><div><h2 id="settings-title">设置</h2><p>工作台外观</p></div><button className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}><X size={18} /></button></header>
-      <div className="settings-body"><section><div className="section-heading"><h3>主题</h3><p>主题会同时应用于侧栏、配置、文档和终端。</p></div><div className="theme-choice-list">{choices.map(({ value, title, detail, icon: Icon }) => <button type="button" className={`theme-choice ${preferences.theme === value ? 'selected' : ''}`} key={value} onClick={() => onSelectTheme(value)}><span className="theme-choice-icon"><Icon size={17} /></span><span className="theme-choice-copy"><strong>{title}</strong><small>{detail}</small></span>{preferences.theme === value && <Check size={16} className="theme-choice-check" />}</button>)}</div></section>
-        <div className="settings-note"><Monitor size={15} /><span>主题偏好保存在本机。</span></div>
-      </div>
-      <footer className="drawer-footer"><span>服务中心</span><div><button className="button secondary" type="button" onClick={onClose}>完成</button></div></footer>
-    </aside>
   </div>;
 }

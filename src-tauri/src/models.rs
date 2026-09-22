@@ -311,11 +311,96 @@ pub struct AgentAvailability {
 #[serde(rename_all = "camelCase")]
 pub struct Preferences {
     pub theme: String,
+    /// 终端外观单独保存，缺少该字段的旧偏好 JSON 会自动使用稳定默认值。
+    #[serde(default)]
+    pub terminal: TerminalAppearance,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             theme: "system".into(),
+            terminal: TerminalAppearance::default(),
+        }
+    }
+}
+
+/// 终端外观设置。字段名称与前端 `TerminalAppearance` 保持 camelCase，主题和光标样式
+/// 使用字符串以便保留前端的自定义主题契约，具体枚举范围由存储层保存时校验。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalAppearance {
+    pub theme: String,
+    pub font_family: String,
+    pub font_size: f64,
+    pub line_height: f64,
+    pub cursor_style: String,
+    pub cursor_blink: bool,
+    pub colors: TerminalColors,
+}
+
+impl Default for TerminalAppearance {
+    fn default() -> Self {
+        Self {
+            theme: "system".into(),
+            font_family: "\"SFMono-Regular\", Consolas, \"Liberation Mono\", monospace".into(),
+            font_size: 13.0,
+            line_height: 1.45,
+            cursor_style: "block".into(),
+            cursor_blink: true,
+            colors: TerminalColors::default(),
+        }
+    }
+}
+
+/// 终端颜色调色板，字段名称与前端调色板契约保持一致。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalColors {
+    pub background: String,
+    pub foreground: String,
+    pub cursor: String,
+    pub selection_background: String,
+    pub black: String,
+    pub red: String,
+    pub green: String,
+    pub yellow: String,
+    pub blue: String,
+    pub magenta: String,
+    pub cyan: String,
+    pub white: String,
+    pub bright_black: String,
+    pub bright_red: String,
+    pub bright_green: String,
+    pub bright_yellow: String,
+    pub bright_blue: String,
+    pub bright_magenta: String,
+    pub bright_cyan: String,
+    pub bright_white: String,
+}
+
+impl Default for TerminalColors {
+    fn default() -> Self {
+        Self {
+            background: "#11171c".into(),
+            foreground: "#d9e3ee".into(),
+            cursor: "#e6edf7".into(),
+            selection_background: "#365779".into(),
+            black: "#25313d".into(),
+            red: "#f47983".into(),
+            green: "#73d59a".into(),
+            yellow: "#e4c979".into(),
+            blue: "#76a8ff".into(),
+            magenta: "#c8a5eb".into(),
+            cyan: "#80d7d1".into(),
+            white: "#d9e3ee".into(),
+            bright_black: "#5f6f7e".into(),
+            bright_red: "#ff9ca4".into(),
+            bright_green: "#a0edbf".into(),
+            bright_yellow: "#f5e8a8".into(),
+            bright_blue: "#a8c8ff".into(),
+            bright_magenta: "#e4d2ff".into(),
+            bright_cyan: "#a9f0eb".into(),
+            bright_white: "#ffffff".into(),
         }
     }
 }

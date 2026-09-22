@@ -177,7 +177,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .popover button > span { flex: 1; }
 .filter-popover { top: 46px; right: 0; min-width: 190px; }
 .filter-popover .clear-filter { margin-top: 4px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--accent); }
-.agent-popover { top: calc(100% + 6px); right: 0; min-width: 240px; }
+.agent-popover { top: calc(100% + 6px); right: 0; min-width: 240px; max-height: min(440px, calc(100vh - 240px)); overflow-y: auto; }
 .agent-popover button:disabled { opacity: .55; }
 .popover-heading { padding: 7px 9px 8px; color: var(--muted); font-size: 11px; }
 .popover-empty { padding: 0 9px 8px; margin: 0; color: var(--muted); font-size: 12px; }
@@ -595,7 +595,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .app-root.is-preview .drawer-scrim { top: 36px; }
 .service-drawer, .agent-drawer, .settings-drawer { width: min(880px, 68vw); min-width: 580px; height: 100%; display: flex; flex-direction: column; background: var(--panel-bg); border-left: 1px solid var(--border); box-shadow: var(--shadow); }
 .agent-drawer { width: min(1010px, 80vw); min-width: 700px; }
-.settings-drawer { width: min(430px, 48vw); min-width: 360px; }
+.settings-drawer { width: min(640px, 68vw); min-width: 440px; }
+.settings-fields { margin: 0; padding: 0; border: 0; min-width: 0; }
+.settings-fields > section + section, .settings-fields > .kc-terminal-appearance-editor { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--border); }
 .drawer-header { min-height: 91px; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 20px 24px 15px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .drawer-header h2 { margin: 0; font-size: 20px; font-weight: 650; }
 .drawer-header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
@@ -869,3 +871,5 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .form-section { padding-top: 11px; padding-bottom: 11px; }
   .drawer-footer { min-height: 54px; }
 }
+
+.agent-preset-description { color: var(--muted); font-size: 12px; line-height: 1.65; margin: 0 0 16px; }

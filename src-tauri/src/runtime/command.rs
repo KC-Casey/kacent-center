@@ -195,6 +195,7 @@ pub(super) fn build_target(
                     .and_then(OsStr::to_str)
                     .unwrap_or_default()
                     .to_ascii_lowercase();
+                configure_interactive_prompt(config, &shell, &mut environment);
                 if matches!(shell_name.as_str(), "sh" | "dash") {
                     // POSIX sh 的 ENV 文件会在交互初始化阶段执行，允许它改写隔离变量。
                     unset_env(&mut environment, "ENV");
@@ -406,6 +407,85 @@ fn interactive_shell_args(shell: &str) -> Result<Vec<String>, String> {
         _ => Err(format!(
             "无法保证所选交互 shell 的启动脚本不会覆盖隔离环境：{shell}"
         )),
+    }
+}
+
+/// 为禁用用户启动脚本的交互 shell 提供带动态工作目录的提示符。
+///
+/// 交互 shell 使用各自的无配置参数启动，因而 bash/zsh 会退回到不含 cwd 的
+/// 默认提示符。这里传入 shell 原生支持的提示符展开式，而不是把配置中的工作
+/// 目录写死到环境变量；这样用户执行 `cd` 后，下一次提示符会由 shell 根据真实
+/// 当前目录重新展开，同时不会加载用户 rc 文件或破坏隔离的 PATH/venv。
+#[cfg(unix)]
+fn configure_interactive_prompt(
+    config: &ServiceConfig,
+    shell: &str,
+    environment: &mut HashMap<String, String>,
+) {
+    let shell_name = Path::new(shell)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match shell_name.as_str() {
+        // bash 在 PS1 中支持 \\w（当前目录，HOME 下路径会缩写为 ~）和 \\$（用户/特权
+        // 提示符）。值会由 bash 在每次打印提示符时展开，因此 cd 后不会停留在旧路径。
+        "bash" => {
+            // 用户在服务配置中显式设置 PS1 时保留其选择；宿主继承的 PS1 则由隔离
+            // 终端的默认提示符替换。PROMPT 对 bash 不起作用，可以原样保留。
+            if !config.env.keys().any(|key| env_key_eq(key, "PS1")) {
+                set_env(environment, "PS1".into(), r"\w \$ ".into());
+            }
+        }
+        // zsh 使用 PROMPT（PS1 是其别名）；%~ 同样按当前目录动态展开，%# 保留普通
+        // 用户与特权用户的提示符区别。zsh 会把 PS1 与 PROMPT 导入为同一个 shell
+        // 参数，两个变量同时存在时结果会受 HashMap 遍历顺序影响，因此这里先归一化。
+        "zsh" => {
+            let configured_prompt = config
+                .env
+                .iter()
+                .find(|(key, _)| env_key_eq(key, "PROMPT"))
+                .map(|(_, value)| value.clone());
+            let configured_ps1 = config
+                .env
+                .iter()
+                .find(|(key, _)| env_key_eq(key, "PS1"))
+                .map(|(_, value)| value.clone());
+            match (configured_prompt, configured_ps1) {
+                (Some(prompt), Some(_ps1)) => {
+                    // 两者都显式配置时定义 PROMPT 优先，删除 PS1，避免 zsh 按导入顺序
+                    // 产生不确定结果。
+                    unset_env(environment, "PS1");
+                    set_env(environment, "PROMPT".into(), prompt);
+                }
+                (Some(prompt), None) => {
+                    // 只显式配置 PROMPT 时清除宿主继承的 PS1，避免别名覆盖自定义值。
+                    unset_env(environment, "PS1");
+                    set_env(environment, "PROMPT".into(), prompt);
+                }
+                (None, Some(ps1)) => {
+                    // 只显式配置 PS1 时保留它，并清除另一个继承的别名。
+                    unset_env(environment, "PROMPT");
+                    set_env(environment, "PS1".into(), ps1);
+                }
+                (None, None) => {
+                    // 没有显式配置时清除宿主 PS1，再注入默认动态 PROMPT；此时不会把
+                    // 配置工作目录写入提示符，cd 后仍由 zsh 读取真实 cwd。
+                    unset_env(environment, "PS1");
+                    set_env(environment, "PROMPT".into(), "%~ %# ".into());
+                }
+            }
+        }
+        // POSIX sh/dash 没有 bash 的 \\w 扩展，但会在每次交互提示时重新展开命令替换。
+        // pwd 是 shell 内建命令；提示符只读取真实 cwd，不执行用户启动脚本。
+        "sh" | "dash" => {
+            // PROMPT 对 POSIX sh 不起作用；只要用户没有显式设置 PS1，就可以安全地
+            // 替换宿主继承值。
+            if !config.env.keys().any(|key| env_key_eq(key, "PS1")) {
+                set_env(environment, "PS1".into(), "$(pwd) \\$ ".into());
+            }
+        }
+        _ => {}
     }
 }
 

@@ -1,8 +1,9 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Terminal, type ITheme } from '@xterm/xterm';
+import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import type { TerminalEvent, TerminalSession } from './types';
+import type { TerminalAppearance, TerminalEvent, TerminalSession } from './types';
+import { resolveTerminalAppearance } from './terminalAppearance';
 import { isDesktop } from './api';
 import '@xterm/xterm/css/xterm.css';
 
@@ -16,11 +17,6 @@ type TerminalEntry = {
   inputSending: boolean; inputOverflowWarned: boolean; session: TerminalSession;
 };
 const entries = new Map<string, TerminalEntry>();
-const themes: Record<'dark' | 'light', ITheme> = {
-  dark: { background: '#11171c', foreground: '#d9e3ee', cursor: '#e6edf7', selectionBackground: '#365779', black: '#25313d', red: '#f47983', green: '#73d59a', yellow: '#e4c979', blue: '#76a8ff', magenta: '#c8a5eb', cyan: '#80d7d1', white: '#d9e3ee' },
-  light: { background: '#ffffff', foreground: '#253142', cursor: '#253142', selectionBackground: '#cbdfff', black: '#253142', red: '#c42b46', green: '#1e7e4a', yellow: '#946300', blue: '#286ed5', magenta: '#8a4caf', cyan: '#197b87', white: '#eef2f7' },
-};
-
 const MAX_QUEUED_INPUT_BYTES = 1024 * 1024;
 const ACK_RETRY_DELAYS = [100, 300, 700] as const;
 const inputEncoder = new TextEncoder();
@@ -167,21 +163,34 @@ function subscribeTerminal(entry: TerminalEntry) {
   });
 }
 
-export function getTerminal(session: TerminalSession, theme: 'dark' | 'light'): TerminalEntry {
+function applyTerminalAppearance(entry: TerminalEntry, appearance: TerminalAppearance, systemTheme: 'dark' | 'light') {
+  const resolved = resolveTerminalAppearance(appearance, systemTheme);
+  entry.terminal.options.theme = resolved.colors;
+  entry.terminal.options.fontFamily = resolved.fontFamily;
+  entry.terminal.options.fontSize = resolved.fontSize;
+  entry.terminal.options.lineHeight = resolved.lineHeight;
+  entry.terminal.options.cursorStyle = resolved.cursorStyle;
+  entry.terminal.options.cursorBlink = resolved.cursorBlink;
+  // xterm 自己绘制的背景之外，host 也要同步，避免系统主题的全局 CSS 覆盖它。
+  entry.host.style.backgroundColor = resolved.colors.background;
+}
+
+export function getTerminal(session: TerminalSession, appearance: TerminalAppearance, systemTheme: 'dark' | 'light'): TerminalEntry {
   const previous = entries.get(session.id);
   if (previous) {
     previous.session = session;
-    previous.terminal.options.theme = themes[theme];
+    applyTerminalAppearance(previous, appearance, systemTheme);
     if (session.state === 'exited') previous.terminal.options.disableStdin = true;
     return previous;
   }
+  const resolved = resolveTerminalAppearance(appearance, systemTheme);
   const terminal = new Terminal({
-    fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace', fontSize: 13, lineHeight: 1.45,
-    cursorBlink: true, scrollback: 5000, theme: themes[theme], allowProposedApi: false,
+    fontFamily: resolved.fontFamily, fontSize: resolved.fontSize, lineHeight: resolved.lineHeight,
+    cursorStyle: resolved.cursorStyle, cursorBlink: resolved.cursorBlink, scrollback: 5000, theme: resolved.colors, allowProposedApi: false,
     convertEol: false, screenReaderMode: true, disableStdin: session.state === 'exited',
   });
   const fit = new FitAddon(); terminal.loadAddon(fit);
-  const host = document.createElement('div'); host.className = 'terminal-emulator';
+  const host = document.createElement('div'); host.className = 'terminal-emulator'; host.style.backgroundColor = resolved.colors.background;
   // 实例不归 React 页签组件所有。卸载页签时只移走 DOM，进程、解析器及回滚区继续存在。
   terminal.open(host);
   const entry: TerminalEntry = {
@@ -213,12 +222,22 @@ export function activateTerminal(entry: TerminalEntry) {
 
 export function resizeTerminal(entry: TerminalEntry) {
   if (entry.disposed || !entry.host.isConnected || entry.host.clientWidth < 20 || entry.host.clientHeight < 20) return;
+  // xterm 自己在重排行列后同步滚动位置，并保留用户的历史阅读状态。
+  // 不在 fit 后立即 scrollToBottom：此时它的滚动容器可能还在等待下一帧同步，
+  // 提前用旧的像素位置滚动反而会把已在底部的缓冲区拉回历史。
   entry.fit.fit();
   if (isDesktop && entry.session.state === 'running') {
     void invoke('resize_terminal', { sessionId: entry.session.id, cols: entry.terminal.cols, rows: entry.terminal.rows }).catch(() => {});
   }
 }
-export function updateTerminalThemes(theme: 'dark' | 'light') { entries.forEach(entry => { entry.terminal.options.theme = themes[theme]; }); }
+/** 只更新已存在的 xterm 样式；不重建实例、不重订阅，因此会话与回滚区保持不变。 */
+export function updateTerminalAppearance(appearance: TerminalAppearance, systemTheme: 'dark' | 'light') {
+  entries.forEach(entry => {
+    applyTerminalAppearance(entry, appearance, systemTheme);
+    // 已挂载实例立即重新测量字体尺寸；未挂载实例在 TerminalPanel 切回时再 fit。
+    if (entry.host.isConnected) resizeTerminal(entry);
+  });
+}
 function disposeMissing(sessions: TerminalSession[]) {
   const ids = new Set(sessions.map(session => session.id));
   entries.forEach((entry, id) => {

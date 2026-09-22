@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Bot, Check, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import type { AgentAvailability, AgentProfile, ServiceConfig } from '../types';
 import Modal from './Modal';
+import { agentPresets, matchesAgentPreset } from '../agentPresets';
 import { trapDialogFocus } from './focusTrap';
 
 interface AgentDrawerProps {
@@ -18,11 +19,6 @@ interface AgentDrawerProps {
 interface AgentEnvRow { key: string; value: string }
 type PendingAgentAction = { kind: 'existing'; agent: AgentProfile } | { kind: 'new'; name: string; executable: string } | { kind: 'close' };
 
-const templates: Array<{ name: string; executable: string }> = [
-  { name: 'Codex', executable: 'codex' },
-  { name: 'Claude Code', executable: 'claude' },
-  { name: 'Gemini CLI', executable: 'gemini' },
-];
 
 function emptyAgent(name = ''): AgentProfile {
   return { id: '', name, executable: '', args: [], env: {} };
@@ -58,6 +54,7 @@ export default function AgentDrawer({ agents, services, initialServiceId, onSave
   const [pendingAction, setPendingAction] = useState<PendingAgentAction | null>(null);
   const drawerRef = useRef<HTMLElement>(null);
   const isDirty = fingerprintAgent(draft, argsText, envRows) !== savedFingerprint;
+  const preset = agentPresets.find(item => matchesAgentPreset(draft, item));
   useEffect(() => trapDialogFocus(drawerRef), []);
   useLayoutEffect(() => {
     onDirtyChange(isDirty);
@@ -183,7 +180,7 @@ export default function AgentDrawer({ agents, services, initialServiceId, onSave
 
   return (
     <>
-      <div className="drawer-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="drawer-scrim" onMouseDown={(event) => event.target === event.currentTarget && requestClose()}>
         <aside ref={drawerRef} className="agent-drawer" role="dialog" aria-modal="true" aria-labelledby="agent-drawer-title">
           <header className="drawer-header">
             <div>
@@ -204,7 +201,7 @@ export default function AgentDrawer({ agents, services, initialServiceId, onSave
               ))}
               <div className="agent-templates">
                 <span>添加常用工具</span>
-                {templates.filter((template) => !agents.some((agent) => agent.name.toLowerCase() === template.name.toLowerCase())).map((template) => (
+                {agentPresets.filter((template) => !agents.some((agent) => matchesAgentPreset(agent, template))).map((template) => (
                   <button type="button" key={template.name} onClick={() => requestNew(template.name, template.executable)}>
                     <Plus size={13} /> {template.name}
                   </button>
@@ -218,6 +215,7 @@ export default function AgentDrawer({ agents, services, initialServiceId, onSave
                 <div><span className="eyebrow">工具配置</span><h3>{draft.name || '新工具'}</h3></div>
                 {draft.id && <button className="icon-button danger-quiet" type="button" aria-label="删除此工具" title="删除此工具" onClick={() => setDeletePrompt(true)}><Trash2 size={16} /></button>}
               </div>
+              {preset && <p className="agent-preset-description">{preset.description}</p>}
               <div className="form-grid two-columns">
                 <label className="field"><span>显示名称 <b aria-hidden="true">*</b></span><input autoFocus value={draft.name} onChange={(event) => setDraft((value) => ({ ...value, name: event.target.value }))} placeholder="例如：Codex" /></label>
                 <label className="field"><span>可执行程序 <b aria-hidden="true">*</b></span><input className="mono-input" value={draft.executable} onChange={(event) => setDraft((value) => ({ ...value, executable: event.target.value }))} placeholder="例如：codex" /></label>

@@ -1,3 +1,5 @@
+import { agentPresets, expandedPresetIds, matchesAgentPreset, presetProfile } from './agentPresets';
+import { defaultTerminalAppearance, normalizeTerminalAppearance, validateTerminalAppearance } from './terminalAppearance';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
@@ -9,27 +11,33 @@ export const isPreview = !isDesktop;
 // 浏览器仅用于界面验收：独立命名空间、明确预览标识，不伪造进程执行结果。
 // 实际桌面始终经过 Rust/SQLite；演示数据只在显式 ?demo=1 时出现。
 const previewKey = 'kacent-interface-preview-v1';
-const previewAgents: AgentProfile[] = [
-  { id: 'codex', name: 'Codex', executable: 'codex', args: [], env: {} },
-  { id: 'claude', name: 'Claude Code', executable: 'claude', args: [], env: {} },
-  { id: 'gemini', name: 'Gemini CLI', executable: 'gemini', args: [], env: {} },
-];
-type PreviewData = { services: ServiceConfig[]; agents: AgentProfile[]; preferences: Preferences; documents: ServiceDocument[] };
+const previewAgents = agentPresets.map(presetProfile);
+type PreviewData = { services: ServiceConfig[]; agents: AgentProfile[]; preferences: Preferences; documents: ServiceDocument[]; presetRevision: number };
 function previewData(): PreviewData {
-  const initial: PreviewData = { services: [], agents: previewAgents, preferences: { theme: 'system' }, documents: [] };
+  const initial: PreviewData = { services: [], agents: previewAgents, preferences: { theme: 'system', terminal: defaultTerminalAppearance() }, documents: [], presetRevision: 1 };
   try {
     const saved = localStorage.getItem(previewKey);
     if (saved) {
       const parsed = JSON.parse(saved) as Partial<PreviewData>;
       const services = Array.isArray(parsed.services) ? parsed.services.map(normalizeService) : initial.services;
-      return {
+      const upgradedAgents = Array.isArray(parsed.agents) ? [...parsed.agents] : [...initial.agents];
+      // 只升级一次：尊重用户改过的路径，也不在重开后复活已删除的预设。
+      if (!parsed.presetRevision) {
+        for (const preset of agentPresets.filter(item => expandedPresetIds.has(item.id))) {
+          if (!upgradedAgents.some(agent => matchesAgentPreset(agent, preset))) upgradedAgents.push(presetProfile(preset));
+        }
+      }
+      const data: PreviewData = {
         ...initial,
         ...parsed,
         services,
-        agents: Array.isArray(parsed.agents) ? parsed.agents : initial.agents,
+        agents: upgradedAgents,
+        presetRevision: 1,
         documents: Array.isArray(parsed.documents) ? parsed.documents : initial.documents,
-        preferences: parsed.preferences ?? initial.preferences,
+        preferences: normalizePreferences(parsed.preferences),
       };
+      if (!parsed.presetRevision) savePreview(data);
+      return data;
     }
   } catch { /* 预览存储损坏时返回空工作区，不影响桌面 SQLite 数据。 */ }
   if (new URLSearchParams(location.search).get('demo') === '1') {
@@ -45,6 +53,11 @@ function previewData(): PreviewData {
     }));
   }
   return initial;
+}
+
+function normalizePreferences(value: Partial<Preferences> | undefined): Preferences {
+  const theme = value?.theme;
+  return { theme: theme === 'dark' || theme === 'light' ? theme : 'system', terminal: normalizeTerminalAppearance(value?.terminal) };
 }
 
 /**
@@ -246,6 +259,8 @@ export const api = {
     return isDesktop ? invoke('check_agent', { agentId, serviceId: serviceId ?? null }) : { available: false, resolvedPath: null, error: '请在桌面应用中检测本地 CLI。' };
   },
   async savePreferences(preferences: Preferences): Promise<Preferences> {
+    const error = validateTerminalAppearance(preferences.terminal);
+    if (error) throw new Error(error);
     if (isDesktop) return invoke('save_preferences', { preferences });
     const data = previewData(); data.preferences = preferences; savePreview(data); return preferences;
   },

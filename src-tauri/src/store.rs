@@ -7,7 +7,7 @@
 
 use crate::models::{
     AgentProfile, ApplicationBinding, ExternalInstance, LaunchConfig, Preferences, ServiceConfig,
-    ServiceDocument,
+    ServiceDocument, TerminalAppearance,
 };
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
@@ -17,7 +17,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// 应用进程中的本地持久化服务。
 ///
@@ -384,43 +384,53 @@ impl Store {
         Ok(())
     }
 
-    /// 读取主题偏好；尚未保存偏好时返回 `system` 默认值。
+    /// 读取主题与终端外观偏好；尚未保存偏好或旧数据库缺少终端 JSON 时返回默认值。
     pub fn preferences(&self) -> Result<Preferences, String> {
         let connection = self.connection()?;
-        let theme = connection
+        let stored = connection
             .query_row(
-                "SELECT theme FROM preferences WHERE singleton_id = 1",
+                "SELECT theme, terminal_json FROM preferences WHERE singleton_id = 1",
                 [],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )
             .optional()
             .map_err(|error| database_error("无法读取主题偏好", error))?;
 
-        Ok(Preferences {
-            theme: theme.unwrap_or_else(|| Preferences::default().theme),
-        })
+        let defaults = Preferences::default();
+        let (theme, terminal) = match stored {
+            Some((theme, terminal_json)) => {
+                let terminal = terminal_json
+                    .map(|json| decode_json(&json, "终端外观偏好"))
+                    .transpose()?
+                    .unwrap_or_else(|| defaults.terminal.clone());
+                (theme, terminal)
+            }
+            None => (defaults.theme.clone(), defaults.terminal.clone()),
+        };
+
+        Ok(Preferences { theme, terminal })
     }
 
-    /// 保存受前端契约约束的主题偏好。
+    /// 保存受前端契约约束的主题及终端外观偏好。
     pub fn save_preferences(&self, preferences: Preferences) -> Result<Preferences, String> {
-        if !matches!(preferences.theme.as_str(), "system" | "dark" | "light") {
-            return Err("主题只能是 system、dark 或 light。".into());
-        }
+        validate_preferences(&preferences)?;
+        let terminal_json = encode_json(&preferences.terminal, "终端外观偏好")?;
 
         let mut connection = self.connection()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| database_error("无法开始保存主题偏好", error))?;
+            .map_err(|error| database_error("无法开始保存偏好", error))?;
         transaction
             .execute(
-                "INSERT INTO preferences (singleton_id, theme) VALUES (1, ?1)
-                 ON CONFLICT(singleton_id) DO UPDATE SET theme = excluded.theme",
-                [&preferences.theme],
+                "INSERT INTO preferences (singleton_id, theme, terminal_json) VALUES (1, ?1, ?2)
+                 ON CONFLICT(singleton_id) DO UPDATE SET
+                    theme = excluded.theme, terminal_json = excluded.terminal_json",
+                params![preferences.theme, terminal_json],
             )
-            .map_err(|error| database_error("无法保存主题偏好", error))?;
+            .map_err(|error| database_error("无法保存偏好", error))?;
         transaction
             .commit()
-            .map_err(|error| database_error("无法完成主题偏好保存", error))?;
+            .map_err(|error| database_error("无法完成偏好保存", error))?;
 
         Ok(preferences)
     }
@@ -799,6 +809,82 @@ fn validate_agent(agent: &AgentProfile) -> Result<(), String> {
     validate_environment(&agent.env, "Agent 环境变量")
 }
 
+fn validate_preferences(preferences: &Preferences) -> Result<(), String> {
+    if !matches!(preferences.theme.as_str(), "system" | "dark" | "light") {
+        return Err("主题只能是 system、dark 或 light。".into());
+    }
+    validate_terminal_appearance(&preferences.terminal)
+}
+
+fn validate_terminal_appearance(appearance: &TerminalAppearance) -> Result<(), String> {
+    if !matches!(
+        appearance.theme.as_str(),
+        "system" | "dark" | "light" | "dracula" | "solarizedDark" | "custom"
+    ) {
+        return Err(
+            "终端主题只能是 system、dark、light、dracula、solarizedDark 或 custom。".into(),
+        );
+    }
+    if appearance.font_family.trim().is_empty() {
+        return Err("终端字体不能为空。".into());
+    }
+    if appearance.font_family.chars().count() > 300 {
+        return Err("终端字体名称不能超过 300 个字符。".into());
+    }
+    if appearance.font_family.chars().any(char::is_control) {
+        return Err("终端字体名称不能包含控制字符。".into());
+    }
+    if !appearance.font_size.is_finite() || !(9.0..=32.0).contains(&appearance.font_size) {
+        return Err("终端字体大小必须是 9 到 32 之间的有限数字。".into());
+    }
+    if !appearance.line_height.is_finite() || !(1.0..=2.0).contains(&appearance.line_height) {
+        return Err("终端行高必须是 1 到 2 之间的有限数字。".into());
+    }
+    if !matches!(
+        appearance.cursor_style.as_str(),
+        "block" | "underline" | "bar"
+    ) {
+        return Err("终端光标样式只能是 block、underline 或 bar。".into());
+    }
+
+    let colors = &appearance.colors;
+    for (label, value) in [
+        ("background", &colors.background),
+        ("foreground", &colors.foreground),
+        ("cursor", &colors.cursor),
+        ("selectionBackground", &colors.selection_background),
+        ("black", &colors.black),
+        ("red", &colors.red),
+        ("green", &colors.green),
+        ("yellow", &colors.yellow),
+        ("blue", &colors.blue),
+        ("magenta", &colors.magenta),
+        ("cyan", &colors.cyan),
+        ("white", &colors.white),
+        ("brightBlack", &colors.bright_black),
+        ("brightRed", &colors.bright_red),
+        ("brightGreen", &colors.bright_green),
+        ("brightYellow", &colors.bright_yellow),
+        ("brightBlue", &colors.bright_blue),
+        ("brightMagenta", &colors.bright_magenta),
+        ("brightCyan", &colors.bright_cyan),
+        ("brightWhite", &colors.bright_white),
+    ] {
+        if !is_hex_color(value) {
+            return Err(format!("终端颜色 {} 必须是 #RRGGBB。", label));
+        }
+    }
+    Ok(())
+}
+
+fn is_hex_color(value: &str) -> bool {
+    value.len() == 7
+        && value.as_bytes().first() == Some(&b'#')
+        && value.as_bytes()[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn reject_nul(value: &str, label: &str) -> Result<(), String> {
     if value.contains('\0') {
         return Err(format!("{}不能包含 NUL 字符。", label));
@@ -920,11 +1006,10 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
             )
             .map_err(|error| database_error("无法建立本地数据表", error))?;
 
-        // 三项默认内容只是“启动配置”：仅存储用户以后可以选择的 CLI 名称，不会安装、
-        // 登录或启动任何命令。服务表刻意不放入示例服务，避免首次启动生成假数据。
-        insert_default_agent(&transaction, "Codex", "codex")?;
-        insert_default_agent(&transaction, "Claude Code", "claude")?;
-        insert_default_agent(&transaction, "Gemini CLI", "gemini")?;
+        // 默认内容只是“启动配置”：仅存储用户以后可以选择的 CLI 名称，不会安装、登录
+        // 或启动任何命令。首次建库完整读取共享预设目录，避免把目录外的工具硬编码在后端。
+        let presets = load_agent_catalog()?;
+        insert_catalog_agents(&transaction, &presets, false)?;
         transaction
             .execute(
                 "INSERT OR IGNORE INTO preferences (singleton_id, theme) VALUES (1, 'system')",
@@ -958,6 +1043,50 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
         ).map_err(|error| database_error("无法迁移多类型服务配置", error))?;
     }
 
+    if locked_version < 4 {
+        // 版本 1 的极简旧数据库可能尚未有 Agent 与偏好表；先补齐表，再添加终端 JSON，
+        // 这样旧服务和文档迁移也能安全落到当前 schema。terminal_json 允许为空，以兼容
+        // 仍未写入终端外观的旧行；读取时会返回模型默认值。
+        transaction
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS agents (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    executable TEXT NOT NULL,
+                    args_json TEXT NOT NULL,
+                    env_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS preferences (
+                    singleton_id INTEGER PRIMARY KEY NOT NULL CHECK (singleton_id = 1),
+                    theme TEXT NOT NULL
+                );",
+            )
+            .map_err(|error| database_error("无法补齐旧版设置表", error))?;
+
+        if !table_has_column(&transaction, "preferences", "terminal_json")
+            .map_err(|error| database_error("无法检查终端外观字段", error))?
+        {
+            transaction
+                .execute("ALTER TABLE preferences ADD COLUMN terminal_json TEXT", [])
+                .map_err(|error| database_error("无法迁移终端外观字段", error))?;
+        }
+
+        let terminal_json = encode_json(&TerminalAppearance::default(), "终端外观默认值")?;
+        transaction
+            .execute(
+                "UPDATE preferences SET terminal_json = ?1 WHERE terminal_json IS NULL",
+                [&terminal_json],
+            )
+            .map_err(|error| database_error("无法初始化终端外观偏好", error))?;
+
+        // 所有旧版本都补充 catalog 中新增的预设。旧版三项即使已被用户删除也不重新
+        // 插入；迁移完成后版本号变为 4，后续重开不会再次执行这段补充逻辑。
+        if locked_version > 0 {
+            let presets = load_agent_catalog()?;
+            insert_catalog_agents(&transaction, &presets, true)?;
+        }
+    }
+
     transaction
         .execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))
         .map_err(|error| database_error("无法更新数据库版本", error))?;
@@ -970,19 +1099,118 @@ fn schema_version(connection: &Connection) -> rusqlite::Result<i64> {
     connection.pragma_query_value(None, "user_version", |row| row.get(0))
 }
 
-fn insert_default_agent(
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    // 表名来自后端固定迁移代码，不接受外部输入；PRAGMA 结果只读取列名，避免依赖
+    // SQLite 在不同版本上的 ALTER TABLE 错误文本。
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// 读取编译时嵌入的 Agent 预设目录，确保开发运行目录和发布包中的配置完全一致。
+fn load_agent_catalog() -> Result<Vec<AgentProfile>, String> {
+    let presets: Vec<AgentProfile> =
+        serde_json::from_str(include_str!("../../assets/agent-presets.json"))
+            .map_err(|error| format!("Agent 预设目录格式无效：{}", error))?;
+    for preset in &presets {
+        if preset.id.trim().is_empty() {
+            return Err(format!("Agent 预设 {} 缺少 ID。", preset.name));
+        }
+        validate_agent(preset)
+            .map_err(|error| format!("Agent 预设 {} 无效：{}", preset.name, error))?;
+    }
+    Ok(presets)
+}
+
+fn insert_catalog_agents(
     transaction: &Transaction<'_>,
-    name: &str,
-    executable: &str,
+    presets: &[AgentProfile],
+    skip_legacy_builtins: bool,
 ) -> Result<(), String> {
+    let mut existing = read_agents(transaction)?;
+    for preset in presets {
+        if skip_legacy_builtins && is_legacy_builtin_agent(preset) {
+            continue;
+        }
+        if existing
+            .iter()
+            .any(|agent| agent_identity_matches(agent, preset))
+        {
+            continue;
+        }
+
+        // 预设在读取时已完整校验，稳定 ID 可供后续模板匹配，不能在迁移时随机改写。
+        insert_agent_record(transaction, preset)?;
+        existing.push(preset.clone());
+    }
+    Ok(())
+}
+
+fn read_agents(connection: &Connection) -> Result<Vec<AgentProfile>, String> {
+    let mut statement = connection
+        .prepare("SELECT id, name, executable, args_json, env_json FROM agents")
+        .map_err(|error| database_error("无法读取 Agent 预设去重数据", error))?;
+    let rows = statement
+        .query_map([], stored_agent_from_row)
+        .map_err(|error| database_error("无法读取 Agent 预设去重数据", error))?;
+    rows.map(|row| {
+        row.map_err(|error| database_error("无法读取 Agent 预设去重数据", error))?
+            .into_model()
+    })
+    .collect()
+}
+
+fn insert_agent_record(transaction: &Transaction<'_>, agent: &AgentProfile) -> Result<(), String> {
+    let args_json = encode_json(&agent.args, "Agent 启动参数")?;
+    let env_json = encode_json(&agent.env, "Agent 环境变量")?;
     transaction
         .execute(
             "INSERT INTO agents (id, name, executable, args_json, env_json)
-             VALUES (?1, ?2, ?3, '[]', '{}')",
-            params![Uuid::new_v4().to_string(), name, executable],
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![agent.id, agent.name, agent.executable, args_json, env_json],
         )
         .map_err(|error| database_error("无法初始化默认 Agent 配置", error))?;
     Ok(())
+}
+
+fn agent_identity_matches(left: &AgentProfile, right: &AgentProfile) -> bool {
+    (!left.id.trim().is_empty() && fold_text(&left.id) == fold_text(&right.id))
+        || fold_text(&left.name) == fold_text(&right.name)
+        || (!agent_executable_key(&left.executable).is_empty()
+            && agent_executable_key(&left.executable) == agent_executable_key(&right.executable))
+}
+
+fn is_legacy_builtin_agent(agent: &AgentProfile) -> bool {
+    let name = fold_text(&agent.name);
+    let executable = agent_executable_key(&agent.executable);
+    matches!(name.as_str(), "codex" | "claude code" | "gemini cli")
+        || matches!(executable.as_str(), "codex" | "claude" | "gemini")
+}
+
+fn fold_text(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn agent_executable_key(value: &str) -> String {
+    let value = value
+        .trim()
+        .trim_matches(|character| character == '"' || character == '\'');
+    let basename = value
+        .rsplit(|character| character == '/' || character == '\\')
+        .next()
+        .unwrap_or(value)
+        .to_lowercase();
+    for extension in [".exe", ".cmd", ".bat"] {
+        if let Some(stem) = basename.strip_suffix(extension) {
+            return stem.to_owned();
+        }
+    }
+    basename
 }
 
 fn timestamp_now() -> String {
@@ -1192,7 +1420,7 @@ fn document_from_row(row: &Row<'_>) -> rusqlite::Result<ServiceDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::ProcessIdentity;
+    use crate::models::{ProcessIdentity, TerminalAppearance};
     use std::path::PathBuf;
 
     #[test]
@@ -1495,7 +1723,7 @@ mod tests {
 
         assert!(store.services()?.is_empty());
         let defaults = store.agents()?;
-        assert_eq!(defaults.len(), 3);
+        assert_eq!(defaults.len(), 9);
         let deleted_default = defaults[0].clone();
         store.delete_agent(&deleted_default.id)?;
         assert!(store.save_agent(deleted_default.clone()).is_err());
@@ -1551,6 +1779,7 @@ mod tests {
 
         store.save_preferences(Preferences {
             theme: "dark".into(),
+            ..Preferences::default()
         })?;
         store.delete_service(&saved_service.id)?;
         assert!(store.documents(&saved_service.id)?.is_empty());
@@ -1562,11 +1791,119 @@ mod tests {
         let reopened = Store::open(&database_path)?;
         assert!(reopened.services()?.is_empty());
         assert!(reopened.agent(&deleted_default.id).is_err());
-        assert_eq!(reopened.agents()?.len(), 3);
+        assert_eq!(reopened.agents()?.len(), 9);
         assert_eq!(reopened.preferences()?.theme, "dark");
         drop(reopened);
         std::fs::remove_dir_all(directory)
             .map_err(|error| format!("无法清理测试数据库：{}", error))?;
+        Ok(())
+    }
+
+    /// 终端外观与旧版偏好 JSON 均能稳定往返，边界值和颜色格式则在写入前拒绝。
+    #[test]
+    fn terminal_preferences_round_trip_and_validation() -> Result<(), String> {
+        let (directory, database_path) = temporary_database();
+        let store = Store::open(&database_path)?;
+
+        let defaults = store.preferences()?;
+        assert_eq!(defaults.theme, "system");
+        assert_eq!(defaults.terminal.font_size, 13.0);
+        assert_eq!(defaults.terminal.line_height, 1.45);
+        assert_eq!(defaults.terminal.colors.bright_white, "#ffffff");
+
+        let mut saved = Preferences::default();
+        saved.theme = "dark".into();
+        saved.terminal.theme = "dracula".into();
+        saved.terminal.font_size = 16.0;
+        saved.terminal.line_height = 1.6;
+        saved.terminal.cursor_style = "bar".into();
+        saved.terminal.cursor_blink = false;
+        saved.terminal.colors.background = "#202124".into();
+        store.save_preferences(saved.clone())?;
+        let loaded = store.preferences()?;
+        assert_eq!(loaded.theme, "dark");
+        assert_eq!(loaded.terminal, saved.terminal);
+
+        let mut invalid = saved.clone();
+        invalid.terminal.font_size = f64::NAN;
+        assert!(store.save_preferences(invalid).is_err());
+        let mut invalid = saved.clone();
+        invalid.terminal.line_height = 2.01;
+        assert!(store.save_preferences(invalid).is_err());
+        let mut invalid = saved.clone();
+        invalid.terminal.colors.cursor = "#12345g".into();
+        assert!(store.save_preferences(invalid).is_err());
+
+        let legacy: Preferences = serde_json::from_str(r#"{"theme":"light"}"#)
+            .map_err(|error| format!("旧版偏好 JSON 应可解析：{}", error))?;
+        assert_eq!(legacy.theme, "light");
+        assert_eq!(legacy.terminal, TerminalAppearance::default());
+
+        drop(store);
+        let reopened = Store::open(&database_path)?;
+        assert_eq!(reopened.preferences()?.terminal, saved.terminal);
+        drop(reopened);
+        std::fs::remove_dir_all(directory)
+            .map_err(|error| format!("无法清理终端偏好测试数据库：{}", error))?;
+        Ok(())
+    }
+
+    /// v3 升级只补 catalog 的新增工具：旧三项不复活，路径和 Windows 扩展名去重生效，
+    /// 且升级完成后删除预设不会在下一次打开数据库时再次插入。
+    #[test]
+    fn migrates_new_agent_catalog_once_without_resurrecting_deleted_entries() -> Result<(), String>
+    {
+        let (directory, database_path) = temporary_database();
+        let connection = Connection::open(&database_path).map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(
+                "CREATE TABLE agents (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    executable TEXT NOT NULL,
+                    args_json TEXT NOT NULL,
+                    env_json TEXT NOT NULL
+                );
+                CREATE TABLE preferences (
+                    singleton_id INTEGER PRIMARY KEY NOT NULL CHECK (singleton_id = 1),
+                    theme TEXT NOT NULL
+                );
+                PRAGMA user_version = 3;",
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO agents (id, name, executable, args_json, env_json)
+                 VALUES (?1, ?2, ?3, '[]', '{}')",
+                params![
+                    "existing-opencode",
+                    "私有 OpenCode",
+                    r"C:\Tools\OPENCODE.CMD"
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        drop(connection);
+
+        let store = Store::open(&database_path)?;
+        let agents = store.agents()?;
+        // 现有 opencode 加上 catalog 中另外五项新增工具；旧三项不因迁移重新出现。
+        assert_eq!(agents.len(), 6);
+        assert!(agents.iter().any(|agent| agent.id == "existing-opencode"));
+        assert!(!agents.iter().any(|agent| {
+            matches!(agent.name.as_str(), "Codex" | "Claude Code" | "Gemini CLI")
+        }));
+        assert!(agents.iter().any(|agent| agent.id == "hermes"));
+
+        store.delete_agent("hermes")?;
+        assert!(store.agent("hermes").is_err());
+        drop(store);
+
+        let reopened = Store::open(&database_path)?;
+        assert_eq!(reopened.agents()?.len(), 5);
+        assert!(reopened.agent("hermes").is_err());
+        drop(reopened);
+        std::fs::remove_dir_all(directory)
+            .map_err(|error| format!("无法清理 Agent 迁移测试数据库：{}", error))?;
         Ok(())
     }
 }

@@ -2,13 +2,17 @@
 .kc-terminal-resizer{position:absolute;top:-13px;left:0;right:0;height:11px;display:flex;justify-content:center;align-items:center;cursor:row-resize;color:var(--muted,#9aa9b9);touch-action:none;background:var(--border,#36414e);border-radius:6px}
 .kc-terminal-resizer svg{background:var(--bg,#1b222a);padding:0 6px;width:32px}
 .kc-terminal-heading{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;gap:12px;flex-shrink:0}
+/* 收起面板只有 43px 高，沿用展开态的上下内边距会撑高标题栏并裁掉底部。
+   标题栏填满面板内部高度，再由 align-items 将文字与按钮垂直居中。 */
+.kc-terminal-panel.is-collapsed .kc-terminal-heading{height:100%;padding-block:0}
 .kc-terminal-heading>div{display:flex;gap:12px;align-items:center}.kc-terminal-heading strong{font-size:15px}.kc-terminal-heading span{font-size:12px;color:var(--muted,#9aa9b9)}
 .kc-terminal-panel button{display:inline-flex;gap:7px;align-items:center;justify-content:center;cursor:pointer;font:inherit;font-size:12px;color:inherit;background:transparent;border:1px solid var(--border,#36414e);border-radius:5px;padding:6px 10px}
 .kc-terminal-panel button:hover{background:var(--hover,#ffffff0b)}.kc-terminal-panel button:focus-visible,.kc-terminal-resizer:focus-visible{outline:2px solid #4a8cff;outline-offset:2px}
 .kc-terminal-panel .kc-terminal-icon{padding:6px}.kc-terminal-tabs{display:flex;overflow-x:auto;border-bottom:1px solid var(--border,#36414e);padding:0 12px;gap:4px;min-height:35px;flex-shrink:0}
 .kc-terminal-tab{display:flex;align-items:center;position:relative;white-space:nowrap;border-bottom:2px solid transparent}.kc-terminal-tab.selected{border-bottom-color:#4a8cff;background:var(--hover,#ffffff06)}
 .kc-terminal-tab>button{border:0;border-radius:0;padding:8px 12px}.kc-terminal-tab small{font-size:10px;color:var(--muted,#9aa9b9);margin-left:5px}.kc-terminal-tab .kc-terminal-close{padding:6px;margin-right:5px}
-.kc-terminal-context{padding:5px 12px;display:flex;justify-content:space-between;font-size:11px;color:var(--muted,#9aa9b9);background:var(--bg,#1b222a);flex-shrink:0}
-.kc-terminal-host{flex:1;min-height:0;overflow:hidden;padding:8px 10px;background:#11171c;border-radius:0 0 6px 6px}.terminal-emulator{height:100%;width:100%;min-height:0}.terminal-emulator .xterm{height:100%}.terminal-emulator .xterm-viewport{scrollbar-width:thin}
-.kc-terminal-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;color:var(--muted,#9aa9b9);background:var(--terminal-bg,#11171c)}.kc-terminal-empty strong{font-size:13px;color:var(--text,#dce4ef)}.kc-terminal-empty p{margin:0;font-size:12px;padding:0 20px;text-align:center}.kc-terminal-empty>svg{opacity:.5;margin-bottom:3px}
-[data-theme="light"] .kc-terminal-host,[data-theme="light"] .kc-terminal-empty{background:#fff}
+.kc-terminal-context{min-height:26px;padding:5px 12px;display:flex;align-items:center;gap:10px;justify-content:space-between;font-size:11px;color:var(--muted,#9aa9b9);background:var(--bg,#1b222a);flex-shrink:0}
+.kc-terminal-host{flex:1;min-height:0;overflow:hidden;padding:8px 10px;background:var(--terminal-background,#11171c);border-radius:0 0 6px 6px}.terminal-emulator{height:100%;width:100%;min-height:0;background:inherit}.terminal-emulator .xterm{height:100%}.terminal-emulator .xterm-viewport{scrollbar-width:thin}
+.kc-terminal-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;color:var(--muted,#9aa9b9);background:var(--terminal-background,#11171c)}.kc-terminal-empty strong{font-size:13px;color:inherit}.kc-terminal-empty p{margin:0;font-size:12px;padding:0 20px;text-align:center}.kc-terminal-empty>svg{opacity:.5;margin-bottom:3px}
+
+.kc-terminal-session-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kc-terminal-context>div{display:flex;align-items:center;gap:12px;flex-shrink:0}.kc-terminal-context .kc-terminal-latest{padding:0;border:0;font-size:11px;line-height:14px;color:var(--accent,#4a8cff)}

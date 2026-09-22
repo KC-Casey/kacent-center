@@ -1,0 +1,11 @@
+[
+  { "id": "codex", "name": "Codex", "executable": "codex", "args": [], "env": {}, "description": "使用本机已安装的 Codex CLI 与登录配置。", "website": "https://developers.openai.com/codex/cli/" },
+  { "id": "claude", "name": "Claude Code", "executable": "claude", "args": [], "env": {}, "description": "在当前服务目录中打开 Claude Code 交互会话。", "website": "https://code.claude.com/docs/en/overview" },
+  { "id": "gemini", "name": "Gemini CLI", "executable": "gemini", "args": [], "env": {}, "description": "使用本机 Gemini CLI，沿用工具自身的登录与模型设置。", "website": "https://geminicli.com/docs/" },
+  { "id": "opencode", "name": "OpenCode", "executable": "opencode", "args": [], "env": {}, "description": "在当前服务目录中打开 OpenCode 终端界面。", "website": "https://opencode.ai/v2/docs/cli" },
+  { "id": "hermes", "name": "Hermes Agent", "executable": "hermes", "args": [], "env": {}, "description": "Nous Research 的 Hermes Agent，使用本机已有配置启动交互会话。", "website": "https://hermes-agent.nousresearch.com/docs/user-guide/cli" },
+  { "id": "zcode", "name": "ZCode（Z.ai）", "executable": "zcode", "args": [], "env": {}, "description": "此预设对应 Z.ai 的命令行版本。请指定该版本的可执行路径；安装桌面版不一定提供 zcode 命令。", "website": "https://github.com/zai-org/ZCode" },
+  { "id": "kimi", "name": "Kimi Code", "executable": "kimi", "args": [], "env": {}, "description": "使用 Moonshot AI 的 Kimi Code，启动命令为 kimi。", "website": "https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/kimi-command.md" },
+  { "id": "aider", "name": "Aider", "executable": "aider", "args": [], "env": {}, "description": "在当前服务目录中打开 Aider 交互会话。", "website": "https://aider.chat/docs/usage.html" },
+  { "id": "copilot", "name": "GitHub Copilot CLI", "executable": "copilot", "args": [], "env": {}, "description": "独立的 GitHub Copilot CLI，使用 copilot 命令启动交互界面。", "website": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference" }
+]
