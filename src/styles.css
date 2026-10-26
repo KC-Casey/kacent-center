@@ -79,6 +79,42 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 ::selection { color: var(--text); background: color-mix(in srgb, var(--accent) 28%, transparent); }
 
+/*
+ * 自定义下拉框（components/Select.tsx）。
+ * .kc-select 为触发按钮的默认外观，各使用场景（.field、内容库工具栏等）可按需覆盖尺寸与边框；
+ * .kc-select-menu 通过 portal 挂在 body 下，z-index 需高于抽屉（60）与对话框（100）。
+ */
+.kc-select {
+  width: 100%; min-width: 0; min-height: 32px;
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 10px; text-align: left; font-size: 12px; color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: 5px; background-color: var(--surface-input);
+  transition: border-color .14s ease, box-shadow .14s ease, background-color .14s ease;
+}
+.kc-select-value { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.kc-select-value.placeholder { color: var(--subtle); }
+.kc-select-chevron { flex: 0 0 auto; color: var(--muted); transition: transform .16s ease; }
+.kc-select.open .kc-select-chevron { transform: rotate(180deg); }
+.kc-select:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong)); }
+.kc-select.open, .kc-select:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); outline: 0; }
+.kc-select:disabled { opacity: .55; }
+.kc-select-menu {
+  position: fixed; z-index: 200; display: flex; flex-direction: column; gap: 1px;
+  padding: 4px; overflow-y: auto; overscroll-behavior: contain;
+  border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow);
+  font-size: 12px; animation: kc-select-in .12s ease-out;
+}
+.kc-select-option {
+  min-height: 30px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 9px; color: var(--text); border-radius: 4px; cursor: pointer; user-select: none;
+}
+.kc-select-option > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.kc-select-option > svg { flex: 0 0 auto; }
+.kc-select-option.active { background: var(--hover); }
+.kc-select-option.selected { color: var(--accent); background: var(--accent-soft); }
+.kc-select-option[aria-disabled="true"] { color: var(--subtle); cursor: not-allowed; }
+@keyframes kc-select-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
 .app-root { height: 100dvh; min-width: 760px; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); color: var(--text); }
 .app-titlebar {
   height: 36px;
@@ -617,14 +653,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .field > span { color: var(--text); }
 .field b { color: var(--danger); font-weight: 600; }
 .field small { color: var(--muted); font-size: 10px; line-height: 1.45; font-weight: 400; }
-.field input, .field textarea, .field select, .env-edit-row input {
+.field input, .field textarea, .field .kc-select, .env-edit-row input {
   width: 100%; min-width: 0; min-height: 37px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 5px;
-  outline: 0; background: var(--surface-input); color: var(--text); font-size: 12px; font-weight: 430;
+  outline: 0; background-color: var(--surface-input); color: var(--text); font-size: 12px; font-weight: 430;
 }
 .field textarea { min-height: 54px; resize: vertical; line-height: 1.55; }
-.field select { appearance: auto; }
 .field input::placeholder, .field textarea::placeholder, .env-edit-row input::placeholder { color: var(--subtle); }
-.field input:focus, .field textarea:focus, .field select:focus, .env-edit-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.field input:focus, .field textarea:focus, .field .kc-select.open, .field .kc-select:focus-visible, .env-edit-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
 .mono-input { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important; }
 .path-input-row { min-width: 0; display: flex; align-items: stretch; gap: 5px; }
 .path-input-row input { flex: 1; }
@@ -665,7 +700,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .agent-check-card strong { font-size: 11px; }
 .agent-check-card p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .agent-check-card .field { margin: 0; }
-.compact-field select { min-height: 32px; padding: 6px 8px; font-size: 10px; }
+.compact-field .kc-select { min-height: 32px; padding: 6px 8px; font-size: 10px; }
 .availability-result { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 9px; padding-top: 10px; border-top: 1px solid var(--border); }
 .availability-result .status-dot { margin-top: 3px; }
 .availability-result strong { font-size: 11px; }

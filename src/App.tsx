@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, AppWindow, Bot, Check, ChevronDown, CircleAlert, Copy, Cpu, Filter,
-  ExternalLink, Folder, FolderOpen, LayoutGrid, Monitor, MoreHorizontal, Pencil, Plus, Power, RefreshCw,
+  ExternalLink, Folder, FolderOpen, Library, LayoutGrid, Monitor, MoreHorizontal, Pencil, Plus, Power, RefreshCw,
   Search, Settings, Shield, Square, TerminalSquare, Trash2, Wrench, X,
 } from 'lucide-react';
 import { api, isDesktop, isPreview, onQuitRequested, onRuntime, onSessions } from './api';
@@ -17,13 +17,14 @@ import Modal from './components/Modal';
 import ServiceDrawer from './components/ServiceDrawer';
 import TerminalPanel from './components/TerminalPanel';
 import SettingsDrawer from './components/SettingsDrawer';
+import ContentWorkspace from './components/ContentWorkspace';
 import { defaultTerminalAppearance } from './terminalAppearance';
 import type { AgentAvailability, AgentProfile, ApplicationSnapshot, AttachApplicationRequest, AttachExternalRequest, Bootstrap, DiscoveredApplication, DiscoveredProcess, DiscoverySnapshot, Preferences, ServiceConfig, ServiceDocument, ServiceRuntime, TerminalSession } from './types';
 import './styles.css';
 
 type MainTab = 'overview' | 'environment' | 'documents';
 type ServiceOperation = 'start' | 'stop' | 'restart';
-type Drawer = { kind: 'service'; mode: 'create' | 'edit' } | { kind: 'external-edit' } | { kind: 'attach-external'; process: DiscoveredProcess } | { kind: 'attach-application'; application: DiscoveredApplication } | { kind: 'agents' } | { kind: 'settings' } | null;
+type Drawer = { kind: 'service'; mode: 'create' | 'edit' } | { kind: 'external-edit' } | { kind: 'attach-external'; process: DiscoveredProcess } | { kind: 'attach-application'; application: DiscoveredApplication } | { kind: 'agents' } | { kind: 'settings'; tab?: 'appearance' | 'content' } | null;
 type ServiceKindFilter = 'all' | ServiceConfig['kind'];
 
 const statusText: Record<ServiceRuntime['status'], string> = {
@@ -129,7 +130,7 @@ export default function App() {
   const [documentsReloadToken, setDocumentsReloadToken] = useState(0);
 
   const [activeServiceId, setActiveServiceId] = useState('');
-  const [activePage, setActivePage] = useState<'services' | 'discovery'>('services');
+  const [activePage, setActivePage] = useState<'services' | 'discovery' | 'content'>('services');
   const [activeTab, setActiveTab] = useState<MainTab>('overview');
   const [activeDiscoveryMode, setActiveDiscoveryMode] = useState<'ports' | 'applications'>('ports');
   const [discoverySnapshot, setDiscoverySnapshot] = useState<DiscoverySnapshot | null>(null);
@@ -172,7 +173,8 @@ export default function App() {
   const [serviceDrawerDirty, setServiceDrawerDirty] = useState(false);
   const [agentDrawerDirty, setAgentDrawerDirty] = useState(false);
   const [settingsDrawerDirty, setSettingsDrawerDirty] = useState(false);
-  const configDraftsRef = useRef({ service: false, agent: false, settings: false });
+  const configDraftsRef = useRef({ service: false, agent: false, settings: false, content: false });
+  const reportContentDirty = useCallback((dirty: boolean) => { configDraftsRef.current.content = dirty; }, []);
   const [systemTheme, setSystemTheme] = useState<'dark' | 'light'>(() => window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 
   const activeService = services.find((service) => service.id === activeServiceId) ?? null;
@@ -446,7 +448,7 @@ export default function App() {
 
   const handleQuitRequest = useCallback(() => {
     if (Object.values(documentDraftsRef.current).some(isDocumentDirty)
-      || configDraftsRef.current.service || configDraftsRef.current.agent || configDraftsRef.current.settings) {
+      || configDraftsRef.current.service || configDraftsRef.current.agent || configDraftsRef.current.settings || configDraftsRef.current.content) {
       setQuitPrompt(true);
     } else {
       void api.quit().catch((reason: unknown) => setGlobalError(`退出应用失败：${errorText(reason)}`));
@@ -463,7 +465,7 @@ export default function App() {
     const beforeUnload = (event: BeforeUnloadEvent) => {
       // 浏览器退出提示同时覆盖父级文档草稿与抽屉中的配置草稿，避免关闭窗口绕过应用内保存流程。
       if (Object.values(documentDraftsRef.current).some(isDocumentDirty)
-        || configDraftsRef.current.service || configDraftsRef.current.agent || configDraftsRef.current.settings) {
+        || configDraftsRef.current.service || configDraftsRef.current.agent || configDraftsRef.current.settings || configDraftsRef.current.content) {
         event.preventDefault();
         event.returnValue = '';
       }
@@ -1004,6 +1006,7 @@ export default function App() {
     ...(serviceDrawerDirty || configDraftsRef.current.service ? ['服务配置'] : []),
     ...(agentDrawerDirty || configDraftsRef.current.agent ? ['AI 工具配置'] : []),
     ...(settingsDrawerDirty || configDraftsRef.current.settings ? ['外观设置'] : []),
+    ...(configDraftsRef.current.content ? ['内容收藏'] : []),
   ];
   const hasDirtyConfig = dirtyConfigLabels.length > 0;
   const activeOperation = activeService ? operationByService[activeService.id] : undefined;
@@ -1040,7 +1043,7 @@ export default function App() {
 
   const saveQuitAndExit = async () => {
     // 此动作只用于没有配置草稿时；配置可能尚未通过表单校验，不能在退出时静默提交。
-    if (configDraftsRef.current.service || configDraftsRef.current.agent || configDraftsRef.current.settings) {
+    if (configDraftsRef.current.service || configDraftsRef.current.agent || configDraftsRef.current.settings || configDraftsRef.current.content) {
       setGlobalError('服务、AI 工具或外观设置仍有未保存修改，请返回抽屉手动保存或明确放弃。');
       return;
     }
@@ -1109,7 +1112,7 @@ export default function App() {
       <div className="app-layout">
         <aside className="sidebar">
           <div className="brand-row"><div className="brand-mark" aria-hidden="true"><LayoutGrid size={20} /></div><strong>服务中心</strong></div>
-          <div className="service-search-row">
+          <div className="service-search-row" hidden={activePage === 'content'}>
             <label className="search-box"><Search size={17} /><input aria-label={activePage === 'discovery' ? '搜索端口、名称、PID 或路径' : '搜索服务'} placeholder={activePage === 'discovery' ? '搜索端口、名称、PID 或路径…' : '搜索服务…'} value={activePage === 'discovery' ? discoverySearch : search} onChange={(event) => activePage === 'discovery' ? setDiscoverySearch(event.target.value) : setSearch(event.target.value)} /><kbd>⌘ K</kbd></label>
             <div className="filter-wrap">
               <button className={`icon-button filter-trigger ${(activePage === 'discovery' ? discoveryCategories.length !== 3 : filterStatus !== 'all' || filterServiceKind !== 'all') ? 'is-active' : ''}`} type="button" aria-label={activePage === 'discovery' ? '筛选进程分类' : '筛选服务状态和类型'} title={activePage === 'discovery' ? '筛选进程分类' : '筛选服务状态和类型'} aria-expanded={filterOpen} onClick={() => setFilterOpen((open) => !open)}><Filter size={17} /></button>
@@ -1130,12 +1133,13 @@ export default function App() {
           </div>
 
           <nav className="sidebar-navigation" aria-label="工作区">
+            <button type="button" className={activePage === 'content' ? 'active' : ''} onClick={() => setActivePage('content')}><Library size={16} /><span>内容库</span></button>
             <button type="button" className={activePage === 'services' ? 'active' : ''} onClick={() => setActivePage('services')}><LayoutGrid size={16} /><span>服务管理</span></button>
             <button type="button" className={activePage === 'discovery' ? 'active' : ''} onClick={() => { setActivePage('discovery'); setActiveDiscoveryMode('ports'); setSelectedDiscoveryProcess(null); }}><Cpu size={16} /><span>发现服务</span>{isPreview && <small>桌面</small>}</button>
           </nav>
 
-          <div className="service-list-heading"><div><strong>服务</strong><span>{services.length}</span></div><button className="icon-button small" type="button" aria-label="新增服务" title="新增服务" onClick={() => setDrawer({ kind: 'service', mode: 'create' })}><Plus size={17} /></button></div>
-          <div className="service-list" aria-label="服务列表">
+          <div className="service-list-heading" hidden={activePage === 'content'}><div><strong>服务</strong><span>{services.length}</span></div><button className="icon-button small" type="button" aria-label="新增服务" title="新增服务" onClick={() => setDrawer({ kind: 'service', mode: 'create' })}><Plus size={17} /></button></div>
+          <div className="service-list" aria-label="服务列表" hidden={activePage === 'content'}>
             {bootstrapLoading ? <div className="sidebar-loading"><span className="spinner" />正在载入…</div> : filteredServices.length > 0 ? filteredServices.map((service) => {
               const runtime = runtimes[service.id] ?? runtimeForService(service);
               const externalPorts = [...new Set(runtime.ports.map((port) => `${port.protocol} ${port.port}`))];
@@ -1158,6 +1162,7 @@ export default function App() {
             )}
           </div>
 
+          {activePage === 'content' && <div className="content-sidebar-note"><Library size={26} /><strong>你的本机内容</strong><p>收藏常用文件夹、应用和游戏，用名称或别名随时打开。</p><small>退出中心后，应用和游戏继续运行。</small></div>}
           <div className="sidebar-bottom">
             <button className="sidebar-action" type="button" onClick={() => setDrawer({ kind: 'agents' })}><Wrench size={18} /><span>AI 工具</span>{agents.length > 0 && <small>{agents.length}</small>}</button>
             <button className="sidebar-action" type="button" onClick={() => setDrawer({ kind: 'settings' })}><Settings size={18} /><span>设置</span></button>
@@ -1166,9 +1171,10 @@ export default function App() {
         </aside>
 
         <main className="main-panel">
+          <ContentWorkspace suspendDialogs={!!drawer || quitPrompt || !!deleteTargetId || !!desktopPrompt || !!externalAction || !!launchCandidates} visible={activePage === 'content' && !bootstrapLoading && !bootstrapError} agents={agents} onOpenService={showService} onSettings={() => setDrawer({ kind: 'settings', tab: 'content' })} onDirtyChange={reportContentDirty} />
           {bootstrapLoading ? <div className="workspace-message"><span className="spinner" /><strong>正在准备本地工作区…</strong></div> : bootstrapError ? (
             <div className="workspace-message error-workspace"><CircleAlert size={24} /><strong>无法载入服务列表</strong><p>{bootstrapError}</p><button className="button primary" type="button" onClick={retryBootstrap}>重新载入</button></div>
-          ) : activePage === 'discovery' ? <>
+          ) : activePage === 'content' ? null : activePage === 'discovery' ? <>
             <div className="discovery-mode-tabs" role="tablist" aria-label="发现服务类型">
               <button type="button" role="tab" aria-selected={activeDiscoveryMode === 'ports'} className={activeDiscoveryMode === 'ports' ? 'active' : ''} onClick={() => { setActiveDiscoveryMode('ports'); setSelectedDiscoveryProcess(null); }}>端口服务</button>
               <button type="button" role="tab" aria-selected={activeDiscoveryMode === 'applications'} className={activeDiscoveryMode === 'applications' ? 'active' : ''} onClick={() => { setActiveDiscoveryMode('applications'); setSelectedDiscoveryProcess(null); }}>运行中应用</button>
@@ -1314,7 +1320,7 @@ export default function App() {
         </main>
       </div>
 
-      <footer className="app-statusbar"><div><Folder size={14} /><span>{activePage === 'discovery' ? '发现服务' : '本地工作区'}</span>{services.length > 0 && <span className="statusbar-count">{services.length} 个服务</span>}</div><div><span>UTF-8</span><i />{activeService?.shell || '系统默认终端'}</div></footer>
+      <footer className="app-statusbar"><div><Folder size={14} /><span>{activePage === 'content' ? '内容库' : activePage === 'discovery' ? '发现服务' : '本地工作区'}</span>{services.length > 0 && <span className="statusbar-count">{services.length} 个服务</span>}</div><div><span>UTF-8</span><i />{activeService?.shell || '系统默认终端'}</div></footer>
 
       {globalError && <div className="global-alert" role="alert"><CircleAlert size={16} /><span>{globalError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setGlobalError('')}><X size={14} /></button></div>}
       {toast && <div className="toast-message" role="status"><Check size={15} />{toast}</div>}
@@ -1378,6 +1384,7 @@ export default function App() {
         onCheck={api.checkAgent}
       />}
       {drawer?.kind === 'settings' && <SettingsDrawer
+        initialTab={drawer.tab}
         preferences={preferences}
         systemTheme={systemTheme}
         onSave={savePreferences}

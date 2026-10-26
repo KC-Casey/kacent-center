@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppWindow, Check, Folder, X } from 'lucide-react';
 import type { AttachApplicationRequest, DiscoveredApplication, ServiceConfig } from '../types';
+import Select from './Select';
 import { trapDialogFocus } from './focusTrap';
 
 interface Props {
@@ -75,8 +76,7 @@ export default function AttachApplicationDrawer({ application, existingServices,
       <div className="drawer-form">
         <section className="form-section"><div className="section-heading"><h3>已核验的应用实例</h3></div><div className="application-identity-card"><div className="application-icon"><AppWindow size={18} /></div><div><strong>{application.instance.name || name}</strong><code title={application.path}>{application.path}</code><small>PID {application.instance.identity.pid} · 创建于 {application.instance.identity.createdAt}</small></div></div><div className="application-member-summary"><strong>{application.windowCount} 个窗口 · {application.members.length} 个关联进程</strong><div>{application.members.map((member) => <span key={`${member.pid}:${member.createdAt}`}>PID {member.pid}</span>)}</div></div></section>
         <section className="form-section"><div className="section-heading"><h3>管理记录</h3></div>
-          <label className="field"><span>关联目标</span><select value={existingServiceId} onChange={(event) => {
-            const nextId = event.target.value;
+          <label className="field"><span>关联目标</span><Select value={existingServiceId} options={[{ value: '', label: '新建桌面应用服务' }, ...eligibleServices.map((service) => ({ value: service.id, label: `关联到“${service.name}”` }))]} onChange={(nextId) => {
             const selectedService = eligibleServices.find((service) => service.id === nextId);
             setExistingServiceId(nextId);
             // 切换关联目标时载入已有记录的用户配置；切回新建则恢复发现快照的候选默认值。
@@ -84,7 +84,7 @@ export default function AttachApplicationDrawer({ application, existingServices,
             setWorkingDir(selectedService?.workingDir ?? candidateWorkingDir);
             setNotes(selectedService?.notes ?? '');
             setError('');
-          }}><option value="">新建桌面应用服务</option>{eligibleServices.map((service) => <option key={service.id} value={service.id}>关联到“{service.name}”</option>)}</select><small>只有路径相同的桌面应用记录可以重新关联。</small></label>
+          }} /><small>只有路径相同的桌面应用记录可以重新关联。</small></label>
           <label className="field"><span>服务名称 <b aria-hidden="true">*</b></span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：代码编辑器" /></label>
           <label className="field"><span>工作目录</span><div className="path-input-row"><input value={workingDir} onChange={(event) => setWorkingDir(event.target.value)} placeholder="可选：用于独立终端和 Agent" /><button className="icon-button" type="button" aria-label="选择工作目录" title="选择目录" onClick={() => void selectDirectory()}><Folder size={17} /></button><button className="button secondary compact" type="button" onClick={() => void selectDirectory()}>选择</button></div><small>运行中应用快照提供的目录仅作为参考，可在这里调整。</small></label>
           <label className="field"><span>备注</span><textarea rows={4} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="记录应用用途或接入来源。" /></label>

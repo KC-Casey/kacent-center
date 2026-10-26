@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Bot, Check, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import type { AgentAvailability, AgentProfile, ServiceConfig } from '../types';
 import Modal from './Modal';
+import Select from './Select';
 import { agentPresets, matchesAgentPreset } from '../agentPresets';
 import { trapDialogFocus } from './focusTrap';
 
@@ -238,7 +239,7 @@ export default function AgentDrawer({ agents, services, initialServiceId, onSave
 
               <div className="agent-check-card">
                 <div><strong>可用性检测</strong><p>{serviceId ? '可结合当前服务的环境与程序搜索路径检测。' : '检测系统环境中的可执行程序。'}</p></div>
-                <label className="field compact-field"><span>关联服务（可选）</span><select value={serviceId} onChange={(event) => setServiceId(event.target.value)}><option value="">系统环境</option>{services.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+                <label className="field compact-field"><span>关联服务（可选）</span><Select value={serviceId} onChange={setServiceId} options={[{ value: '', label: '系统环境' }, ...services.map((item) => ({ value: item.id, label: item.name }))]} /></label>
                 <button type="button" className="button secondary" onClick={() => void check()} disabled={checking || !draft.id || isDirty}><RefreshCw size={15} className={checking ? 'spin-icon' : ''} />{checking ? '检测中…' : '重新检测'}</button>
                 {availability && <div className={`availability-result ${availability.available ? 'available' : 'unavailable'}`} role="status">
                   <span className="status-dot" />

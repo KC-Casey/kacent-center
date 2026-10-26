@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Check, Folder, Plus, Trash2, X } from 'lucide-react';
 import type { ServiceConfig } from '../types';
 import Modal from './Modal';
+import Select, { environmentOptions } from './Select';
 import { trapDialogFocus } from './focusTrap';
 
 interface Props {
@@ -132,7 +133,7 @@ export default function ExternalServiceDrawer({ service, onClose, onSave, onDirt
             <label className="field"><span>工作目录</span><div className="path-input-row"><input value={workingDir} onChange={(event) => setWorkingDir(event.target.value)} placeholder="可留空，稍后补充" /><button className="icon-button" type="button" aria-label="选择工作目录" title="选择目录" onClick={() => void selectDirectory()}><Folder size={17} /></button><button className="button secondary compact" type="button" onClick={() => void selectDirectory()}>选择</button></div><small>创建独立终端、Agent 或转换为平台托管前需要有效工作目录。</small>{service.external?.workingDir && service.external.workingDir !== workingDir && <small className="external-suggestion">扫描快照建议：<code>{service.external.workingDir}</code><button className="text-button" type="button" onClick={() => setWorkingDir(service.external!.workingDir!)}>使用建议目录</button></small>}</label>
             <label className="field"><span>启动命令</span><input className="mono-input" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="可留空，转换托管前再补齐" /><small>保存命令不会启动、停止或重启现有进程。</small></label>
             <div className="form-grid two-columns">
-              <label className="field"><span>环境类型</span><select value={environmentType} onChange={(event) => setEnvironmentType(event.target.value as ServiceConfig['environmentType'])}><option value="system">系统环境</option><option value="venv">Python 虚拟环境</option><option value="custom">自定义环境</option></select></label>
+              <label className="field"><span>环境类型</span><Select value={environmentType} onChange={(next) => setEnvironmentType(next as ServiceConfig['environmentType'])} options={environmentOptions} /></label>
               <label className="field"><span>环境目录</span><div className="path-input-row"><input value={environmentDir} onChange={(event) => setEnvironmentDir(event.target.value)} placeholder="可留空，使用系统环境" /><button className="icon-button" type="button" aria-label="选择环境目录" title="选择目录" onClick={() => void selectEnvironmentDirectory()}><Folder size={17} /></button><button className="button secondary compact" type="button" onClick={() => void selectEnvironmentDirectory()}>选择</button></div></label>
             </div>
             <label className="field"><span>终端程序</span><input className="mono-input" value={shell} onChange={(event) => setShell(event.target.value)} placeholder="留空使用系统默认终端" /><small>可填写可执行程序名或完整路径。</small></label>

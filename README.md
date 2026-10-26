@@ -16,21 +16,42 @@
 
 首次启动是空服务列表，不自动创建演示服务、运行命令或安装 Agent。
 
+## 内容库、Agent 与语音
+
+左侧“内容库”用于收藏文件夹、本地应用及 Steam 游戏，提供标签、别名、置顶与最近打开。底部支持文字指令和本地按键语音；外部 Agent 可通过 MCP 接入。打开唯一目标直接执行，退出、移除和高风险操作在中心确认。
+
+详细流程、工具接入及边界见 [内容库与指令控制](./docs/内容库与指令控制.md)。语音转写离线运行，转写文字仍沿用所选 Agent 的本地或云端模型。
+
 ## 开发环境
 
 需要 Node.js 22.12+（建议当前 LTS）、pnpm 11+ 和 Rust 稳定版。
 
-- macOS：需要 Xcode Command Line Tools，应用目标为 macOS 13+。
+- macOS：需要 Xcode Command Line Tools，应用目标为 macOS 13+。源码构建语音引擎还需要当前 macOS SDK、clang++ 和 C++ 标准库头文件；一键脚本会通过 xcrun 动态定位 SDK，并用 clang++ 检查 `<array>` 与 `<mutex>`，必要时只为本次调试补充 CXXFLAGS。
+- CMake 3.20 或更高版本：用于编译本地语音引擎。安装包运行时不需要此工具。
 - Windows：需要 Microsoft C++ Build Tools 的“使用 C++ 的桌面开发”组件、Rust MSVC 工具链与 WebView2，应用目标为 Windows 10 22H2／Windows 11 x64。
 
 ### 一键启动调试
 
-- **macOS：** 在 Finder 双击项目根目录的 [启动调试.command](./启动调试.command)。也可以在终端执行 `./启动调试.command`。
-- **Windows：** 双击项目根目录的 [启动调试.bat](./启动调试.bat)。
+- **macOS：** 在 Finder 双击项目根目录的 [start-dev.command](./start-dev.command)。也可以在终端执行 `./start-dev.command`。
+- **Windows：** 双击项目根目录的 [start-dev.bat](./start-dev.bat)。
 
-脚本会定位项目目录、检查 Node.js／pnpm／Rust、按锁文件同步前端依赖，然后执行 `pnpm desktop`。前端修改自动更新，Rust 修改由 Tauri 重新编译；首次编译可能需要几分钟。系统工具缺失时会显示中文提示，不会自动安装编译器或修改全局环境。
+脚本会定位项目目录、检查 Node.js／pnpm／Rust／CMake、按锁文件同步前端依赖，然后执行 `pnpm desktop`。前端修改自动更新，Rust 修改由 Tauri 重新编译；首次编译可能需要几分钟。系统工具缺失时会显示中文提示，不会自动安装编译器或修改全局环境。
 
-macOS 支持从常见安装目录和 nvm 查找已有 Node；本机仍保留前次构建的临时 Rust 时也可自动复用，无需手动设置环境变量。临时工具链被系统清理后需要安装常规 Rust。
+macOS 支持从常见安装目录和 nvm 查找已有 Node。Rust 与 CMake 可以持久安装在项目的 `.local-dev/tools/` 下，一键脚本会自动启用，不再依赖系统临时目录。此目录已被 Git 忽略；删除项目、删除 `.local-dev` 或运行清理忽略文件的命令仍会删除工具，新克隆的项目需要重新安装。Xcode Command Line Tools 与 macOS SDK 仍使用系统安装。
+
+在项目根目录执行以下命令可安装或恢复 macOS 项目内工具（需要网络和已有 Python 3）。Rust 安装采用官方支持的 `CARGO_HOME`、`RUSTUP_HOME` 自定义目录方式，不修改用户 shell 配置；CMake 使用发行包中的原生程序，选择 3.x 以兼容现有构建依赖。
+
+```sh
+mkdir -p .local-dev/tools/downloads
+curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o .local-dev/tools/downloads/rustup-init.sh
+CARGO_HOME="$PWD/.local-dev/tools/cargo" RUSTUP_HOME="$PWD/.local-dev/tools/rustup" \
+  /bin/sh .local-dev/tools/downloads/rustup-init.sh -y --no-modify-path --profile minimal --default-toolchain stable
+python3 -m pip install --disable-pip-version-check --no-cache-dir --only-binary=:all: \
+  --target .local-dev/tools/cmake --upgrade 'cmake>=3.20,<4'
+./start-dev.command --check
+```
+
+手动运行 `cargo` 或 `pnpm desktop` 前，在 Bash 或 Zsh 中执行 `source scripts/dev-env.sh`。若显式设置过 `CARGO_HOME` 或 `RUSTUP_HOME`，脚本保留该设置；要使用项目内 Rust，请先运行 `unset CARGO_HOME RUSTUP_HOME`，再加载脚本。项目内工具是当前操作系统的安装产物，不能直接复制给 Windows 使用。
 
 调试数据默认保存在项目的 `.local-dev/data`，与正式安装版分开，并已加入 Git 忽略规则。已设置 `KACENT_DATA_DIR` 时沿用该路径。关闭应用窗口会隐藏到托盘；结束调试时先选择托盘中的“停止托管服务并退出”。启动失败时查看终端日志；脚本不会自动结束占用 1420 端口的其他程序。
 
@@ -40,7 +61,7 @@ macOS 支持从常见安装目录和 nvm 查找已有 Node；本机仍保留前�
 
 ```sh
 # macOS
-./启动调试.command --check
+./start-dev.command --check
 ```
 
 ```powershell

@@ -5,6 +5,9 @@
 //! 会话、受管进程句柄或其他运行时状态。所有数据库访问共用一条受互斥锁保护的连接，
 //! 避免 Tauri 命令并发调用时同时操作同一连接。
 
+use crate::content_models::{
+    validate_content_item, ContentApplicationBinding, ContentItem, ContentKind, ContentTarget,
+};
 use crate::models::{
     AgentProfile, ApplicationBinding, ExternalInstance, LaunchConfig, Preferences, ServiceConfig,
     ServiceDocument, TerminalAppearance,
@@ -12,12 +15,13 @@ use crate::models::{
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::{de::DeserializeOwned, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// 应用进程中的本地持久化服务。
 ///
@@ -287,6 +291,286 @@ impl Store {
             )
             .map_err(|e| database_error("无法解除应用关联", e))?;
         Ok(())
+    }
+
+    // ---------------------------------------------------------------------
+    // 内容库
+    // ---------------------------------------------------------------------
+
+    /// 列出独立内容配置。这里不计算文件夹或应用运行态；状态由 `ContentManager` 即时生成。
+    pub fn content_items(&self) -> Result<Vec<ContentItem>, String> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT config_json FROM content_items
+                 ORDER BY pinned DESC, updated_at DESC, id",
+            )
+            .map_err(|error| database_error("无法读取内容配置", error))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| database_error("无法读取内容配置", error))?;
+        rows.map(|row| {
+            let json = row.map_err(|error| database_error("无法读取内容配置", error))?;
+            decode_json(&json, "内容配置")
+        })
+        .collect()
+    }
+
+    /// 兼容内容库调用方使用的简短别名。
+    pub fn contents(&self) -> Result<Vec<ContentItem>, String> {
+        self.content_items()
+    }
+
+    /// 读取单条内容配置。
+    pub fn content_item(&self, id: &str) -> Result<ContentItem, String> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT config_json FROM content_items WHERE id = ?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| database_error("无法读取内容配置", error))?
+            .map(|json| decode_json(&json, "内容配置"))
+            .transpose()?
+            .ok_or_else(|| format!("找不到内容：{id}"))
+    }
+
+    /// 保存内容配置。该方法只写内容表，不会创建或更新服务、终端、PTY 或文档。
+    pub fn save_content_item(&self, mut item: ContentItem) -> Result<ContentItem, String> {
+        item.target = item.target.normalized()?;
+        validate_content_item(&item)?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| database_error("无法开始保存内容配置", error))?;
+
+        let requested_id = item.id.trim();
+        let is_new = requested_id.is_empty();
+        let existing = if is_new {
+            None
+        } else {
+            transaction
+                .query_row(
+                    "SELECT created_at, revision FROM content_items WHERE id = ?1",
+                    [requested_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .map_err(|error| database_error("无法检查内容配置", error))?
+        };
+        if !is_new && existing.is_none() {
+            return Err(format!("内容不存在，无法更新：{requested_id}"));
+        }
+        let id = if is_new {
+            Uuid::new_v4().to_string()
+        } else {
+            requested_id.to_owned()
+        };
+        let created_at = existing
+            .as_ref()
+            .map(|(created_at, _)| created_at.clone())
+            .unwrap_or_else(timestamp_now);
+        let old_revision = existing
+            .as_ref()
+            .map(|(_, revision)| *revision)
+            .unwrap_or(0);
+        let revision = old_revision.saturating_add(1).max(1);
+        let updated_at = timestamp_now();
+        item.id = id.clone();
+        item.created_at = created_at.clone();
+        item.updated_at = updated_at.clone();
+        item.revision = revision as u64;
+        let config_json = encode_json(&item, "内容配置")?;
+
+        if is_new {
+            transaction
+                .execute(
+                    "INSERT INTO content_items
+                     (id, kind, pinned, config_json, created_at, updated_at, revision)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        id,
+                        item.kind.as_str(),
+                        if item.pinned { 1 } else { 0 },
+                        config_json,
+                        created_at,
+                        updated_at,
+                        revision,
+                    ],
+                )
+                .map_err(|error| database_error("无法保存内容配置", error))?;
+        } else {
+            transaction
+                .execute(
+                    "UPDATE content_items SET kind = ?2, pinned = ?3, config_json = ?4,
+                     updated_at = ?5, revision = ?6 WHERE id = ?1",
+                    params![
+                        id,
+                        item.kind.as_str(),
+                        if item.pinned { 1 } else { 0 },
+                        config_json,
+                        updated_at,
+                        revision,
+                    ],
+                )
+                .map_err(|error| database_error("无法更新内容配置", error))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| database_error("无法完成内容配置保存", error))?;
+        Ok(item)
+    }
+
+    /// 只更新内容最近使用时间，避免动作层为了写状态而改动目标配置版本。
+    pub fn touch_content(&self, id: &str) -> Result<(), String> {
+        let now = timestamp_now();
+        let mut item = self.content_item(id)?;
+        item.last_used_at = Some(now);
+        // `save_content_item` 会递增 revision，而最近使用时间不应让确认快照失效；因此
+        // 这里直接更新完整 JSON 并保留原有 revision。
+        let json = encode_json(&item, "内容配置")?;
+        let connection = self.connection()?;
+        let changed = connection
+            .execute(
+                "UPDATE content_items SET config_json = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, json, item.updated_at],
+            )
+            .map_err(|error| database_error("无法更新内容使用时间", error))?;
+        if changed == 0 {
+            return Err(format!("找不到内容：{id}"));
+        }
+        Ok(())
+    }
+
+    /// 删除内容记录及其身份关联；由于内容表不持有服务外键，原服务和文档保持不变。
+    pub fn delete_content_item(&self, id: &str) -> Result<(), String> {
+        let connection = self.connection()?;
+        connection
+            .execute("DELETE FROM content_items WHERE id = ?1", [id])
+            .map_err(|error| database_error("无法删除内容配置", error))?;
+        Ok(())
+    }
+
+    pub fn content_application_binding(
+        &self,
+        id: &str,
+    ) -> Result<Option<ContentApplicationBinding>, String> {
+        let connection = self.connection()?;
+        let json = connection
+            .query_row(
+                "SELECT binding_json FROM content_application_bindings WHERE content_id = ?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| database_error("无法读取内容应用关联", error))?;
+        json.map(|json| decode_json(&json, "内容应用关联"))
+            .transpose()
+    }
+
+    pub fn content_application_bindings(
+        &self,
+    ) -> Result<Vec<(String, ContentApplicationBinding)>, String> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT content_id, binding_json FROM content_application_bindings
+                 ORDER BY content_id",
+            )
+            .map_err(|error| database_error("无法读取内容应用关联", error))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| database_error("无法读取内容应用关联", error))?;
+        rows.map(|row| {
+            let (id, json) = row.map_err(|error| database_error("无法读取内容应用关联", error))?;
+            Ok((id, decode_json(&json, "内容应用关联")?))
+        })
+        .collect()
+    }
+
+    /// 以完整 PID 创建身份为唯一键保存内容关联，并检查服务表及其他内容是否已接管该实例。
+    pub fn bind_content_application(
+        &self,
+        id: &str,
+        binding: &ContentApplicationBinding,
+    ) -> Result<(), String> {
+        if binding.identity.created_at.trim().is_empty() {
+            return Err("应用关联缺少进程创建身份。".into());
+        }
+        if binding.target_path.trim().is_empty() {
+            return Err("应用关联缺少目标路径。".into());
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| database_error("无法开始保存内容应用关联", error))?;
+        transaction
+            .query_row(
+                "SELECT 1 FROM content_items WHERE id = ?1",
+                [id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| database_error("无法检查内容配置", error))?
+            .ok_or_else(|| format!("找不到内容：{id}"))?;
+        ensure_unique_content_identity(&transaction, &binding.identity, id)?;
+        let json = encode_json(binding, "内容应用关联")?;
+        transaction
+            .execute(
+                "INSERT INTO content_application_bindings (content_id, binding_json)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(content_id) DO UPDATE SET binding_json = excluded.binding_json",
+                params![id, json],
+            )
+            .map_err(|error| database_error("无法保存内容应用关联", error))?;
+        transaction
+            .commit()
+            .map_err(|error| database_error("无法完成内容应用关联保存", error))
+    }
+
+    pub fn clear_content_application_binding(&self, id: &str) -> Result<(), String> {
+        self.connection()?
+            .execute(
+                "DELETE FROM content_application_bindings WHERE content_id = ?1",
+                [id],
+            )
+            .map_err(|error| database_error("无法解除内容应用关联", error))?;
+        Ok(())
+    }
+
+    /// 内容库偏好使用独立单例表，由上层负责校验 Value 的字段契约。
+    pub fn content_preferences(&self) -> Result<Value, String> {
+        let connection = self.connection()?;
+        let json = connection
+            .query_row(
+                "SELECT preferences_json FROM content_preferences WHERE singleton_id = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| database_error("无法读取内容库偏好", error))?;
+        match json {
+            Some(json) => decode_json(&json, "内容库偏好"),
+            None => Ok(Value::Object(serde_json::Map::new())),
+        }
+    }
+
+    pub fn save_content_preferences(&self, preferences: Value) -> Result<Value, String> {
+        let json = encode_json(&preferences, "内容库偏好")?;
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO content_preferences (singleton_id, preferences_json)
+                 VALUES (1, ?1)
+                 ON CONFLICT(singleton_id) DO UPDATE SET preferences_json = excluded.preferences_json",
+                [json],
+            )
+            .map_err(|error| database_error("无法保存内容库偏好", error))?;
+        Ok(preferences)
     }
 
     /// 列出所有 Agent 启动配置；本方法只读本地设置，不检查或执行 CLI。
@@ -1087,12 +1371,146 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
         }
     }
 
+    if locked_version < 5 {
+        // 内容库与服务配置、服务文档完全分表。content_application_bindings 只保存
+        // 原生应用创建身份；删除收藏会触发这里的级联解除，但不会触碰 services/documents。
+        transaction
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS content_items (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    kind TEXT NOT NULL,
+                    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+                    config_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE INDEX IF NOT EXISTS content_items_order_idx
+                    ON content_items(pinned DESC, updated_at DESC, id);
+                CREATE TABLE IF NOT EXISTS content_application_bindings (
+                    content_id TEXT PRIMARY KEY NOT NULL
+                        REFERENCES content_items(id) ON DELETE CASCADE,
+                    binding_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS content_application_bindings_identity_idx
+                    ON content_application_bindings(content_id);
+                CREATE TABLE IF NOT EXISTS content_preferences (
+                    singleton_id INTEGER PRIMARY KEY NOT NULL CHECK (singleton_id = 1),
+                    preferences_json TEXT NOT NULL
+                );
+                INSERT OR IGNORE INTO content_preferences (singleton_id, preferences_json)
+                    VALUES (1, '{}');",
+            )
+            .map_err(|error| database_error("无法迁移内容库数据表", error))?;
+        // v4 的 desktopApp 已经是真实的原生服务配置，迁移时只创建一条 serviceLink
+        // 收藏作为内容库入口。服务配置、文档和 application_bindings 都留在原表；这段
+        // 代码只在 user_version 尚未到 5 时执行，提交后删除收藏也不会在重开时复活。
+        seed_legacy_desktop_content(&transaction)?;
+    }
+
     transaction
         .execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))
         .map_err(|error| database_error("无法更新数据库版本", error))?;
     transaction
         .commit()
         .map_err(|error| database_error("无法完成数据库迁移", error))
+}
+
+/// 将迁移前已经存在的 desktopApp 服务一次性映射为内容收藏。
+///
+/// 内容项只保存 serviceId，不复制启动参数、文档或原生应用身份。迁移在同一
+/// `TransactionBehavior::Immediate` 事务中执行，表创建、种子记录和 user_version 更新要么
+/// 一起提交，要么一起回滚；已存在相同 serviceLink 时跳过，兼容意外中断后的重试。
+fn seed_legacy_desktop_content(transaction: &Transaction<'_>) -> Result<(), String> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT id, name, description, notes, created_at, updated_at
+             FROM services WHERE kind = 'desktopApp' ORDER BY created_at, id",
+        )
+        .map_err(|error| database_error("无法读取旧 desktopApp 服务", error))?;
+    let services = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(|error| database_error("无法读取旧 desktopApp 服务", error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| database_error("无法读取旧 desktopApp 服务", error))?;
+    drop(statement);
+
+    let mut linked_service_ids = HashSet::new();
+    let mut existing_items = transaction
+        .prepare("SELECT config_json FROM content_items")
+        .map_err(|error| database_error("无法读取已有内容收藏", error))?;
+    let existing_rows = existing_items
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| database_error("无法读取已有内容收藏", error))?;
+    for row in existing_rows {
+        let json = row.map_err(|error| database_error("无法读取已有内容收藏", error))?;
+        let item: ContentItem = decode_json(&json, "内容配置")?;
+        if let ContentTarget::ServiceLink { service_id } = item.target {
+            linked_service_ids.insert(service_id);
+        }
+    }
+    drop(existing_items);
+
+    for (service_id, name, description, notes, created_at, updated_at) in services {
+        if linked_service_ids.contains(&service_id) {
+            continue;
+        }
+        let display_name = if name.trim().is_empty() {
+            format!("桌面应用 {}", service_id)
+        } else {
+            name
+        };
+        let mut item = ContentItem::new(
+            display_name,
+            ContentKind::Application,
+            ContentTarget::ServiceLink {
+                service_id: service_id.clone(),
+            },
+        );
+        item.id = Uuid::new_v4().to_string();
+        item.description = description;
+        item.notes = notes;
+        item.created_at = if created_at.trim().is_empty() {
+            timestamp_now()
+        } else {
+            created_at
+        };
+        item.updated_at = if updated_at.trim().is_empty() {
+            item.created_at.clone()
+        } else {
+            updated_at
+        };
+        item.revision = 1;
+        validate_content_item(&item)?;
+        let config_json = encode_json(&item, "迁移后的内容配置")?;
+        transaction
+            .execute(
+                "INSERT INTO content_items
+                    (id, kind, pinned, config_json, created_at, updated_at, revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    item.id,
+                    item.kind.as_str(),
+                    if item.pinned { 1 } else { 0 },
+                    config_json,
+                    item.created_at,
+                    item.updated_at,
+                    item.revision as i64,
+                ],
+            )
+            .map_err(|error| database_error("无法写入旧 desktopApp 内容收藏", error))?;
+        linked_service_ids.insert(service_id);
+    }
+    Ok(())
 }
 
 fn schema_version(connection: &Connection) -> rusqlite::Result<i64> {
@@ -1362,6 +1780,93 @@ fn ensure_unique_external_identity(
             return Err("该进程实例已作为桌面应用接入平台。".into());
         }
     }
+    let mut statement = transaction
+        .prepare("SELECT binding_json FROM content_application_bindings")
+        .map_err(|e| database_error("无法检查内容应用关联", e))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| database_error("无法检查内容应用关联", e))?;
+    for row in rows {
+        let existing: ContentApplicationBinding = decode_json(
+            &row.map_err(|e| database_error("无法检查内容应用关联", e))?,
+            "内容应用关联",
+        )?;
+        if existing.identity == external.identity {
+            return Err("该进程实例已由内容收藏关联。".into());
+        }
+    }
+    Ok(())
+}
+
+/// 内容收藏与桌面服务共用同一实例所有权：PID 复用时必须同时匹配创建身份，不能因为
+/// 内容目标路径相同就让两条记录重复接管同一个原生应用。
+fn ensure_unique_content_identity(
+    transaction: &Transaction<'_>,
+    identity: &crate::models::ProcessIdentity,
+    current_content_id: &str,
+) -> Result<(), String> {
+    let mut content_statement = transaction
+        .prepare(
+            "SELECT content_id, binding_json FROM content_application_bindings
+             WHERE content_id <> ?1",
+        )
+        .map_err(|error| database_error("无法检查重复的内容应用实例", error))?;
+    let content_rows = content_statement
+        .query_map([current_content_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| database_error("无法检查重复的内容应用实例", error))?;
+    for row in content_rows {
+        let (content_id, json) =
+            row.map_err(|error| database_error("无法检查重复的内容应用实例", error))?;
+        let binding: ContentApplicationBinding = decode_json(&json, "内容应用关联")?;
+        if binding.identity == *identity {
+            return Err(format!("该原生应用实例已由内容 {} 关联。", content_id));
+        }
+    }
+    drop(content_statement);
+
+    let mut binding_statement = transaction
+        .prepare("SELECT service_id, binding_json FROM application_bindings")
+        .map_err(|error| database_error("无法检查桌面服务应用实例", error))?;
+    let binding_rows = binding_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| database_error("无法检查桌面服务应用实例", error))?;
+    for row in binding_rows {
+        let (service_id, json) =
+            row.map_err(|error| database_error("无法检查桌面服务应用实例", error))?;
+        let binding: ApplicationBinding = decode_json(&json, "应用关联")?;
+        if binding.instance.identity == *identity {
+            return Err(format!(
+                "该原生应用实例已由桌面服务 {} 关联；请收藏该服务。",
+                service_id
+            ));
+        }
+    }
+    drop(binding_statement);
+
+    // 非桌面外部服务没有 application_bindings 行，仍应阻止内容把相同 PID 接管为 GUI 应用。
+    let mut service_statement = transaction
+        .prepare(
+            "SELECT id, external_json FROM services
+             WHERE source = 'external' AND external_json IS NOT NULL",
+        )
+        .map_err(|error| database_error("无法检查外部服务应用实例", error))?;
+    let service_rows = service_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| database_error("无法检查外部服务应用实例", error))?;
+    for row in service_rows {
+        let (service_id, json) =
+            row.map_err(|error| database_error("无法检查外部服务应用实例", error))?;
+        let external: ExternalInstance = decode_json(&json, "外部实例")?;
+        if external.identity == *identity {
+            return Err(format!("该进程实例已由外部服务 {} 关联。", service_id));
+        }
+    }
     Ok(())
 }
 
@@ -1420,6 +1925,7 @@ fn document_from_row(row: &Row<'_>) -> rusqlite::Result<ServiceDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content_models::{ContentKind, ContentTarget};
     use crate::models::{ProcessIdentity, TerminalAppearance};
     use std::path::PathBuf;
 
@@ -1868,6 +2374,15 @@ mod tests {
                     singleton_id INTEGER PRIMARY KEY NOT NULL CHECK (singleton_id = 1),
                     theme TEXT NOT NULL
                 );
+                CREATE TABLE services (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    notes TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    kind TEXT NOT NULL
+                );
                 PRAGMA user_version = 3;",
             )
             .map_err(|error| error.to_string())?;
@@ -1904,6 +2419,128 @@ mod tests {
         drop(reopened);
         std::fs::remove_dir_all(directory)
             .map_err(|error| format!("无法清理 Agent 迁移测试数据库：{}", error))?;
+        Ok(())
+    }
+
+    /// 内容表独立于服务和文档：删除收藏只解除自身关联，Steam URI 及内容偏好也能往返。
+    #[test]
+    fn content_schema_round_trip_delete_and_identity_deduplication() -> Result<(), String> {
+        let (directory, database_path) = temporary_database();
+        let store = Store::open(&database_path)?;
+        let folder = directory.to_string_lossy().into_owned();
+        let service = store.save_service(ServiceConfig {
+            id: String::new(),
+            kind: "desktopApp".into(),
+            launch: LaunchConfig::DesktopApp {
+                path: folder.clone(),
+                args: vec![],
+                start_dir: String::new(),
+            },
+            source: "managed".into(),
+            external: None,
+            name: "桌面应用".into(),
+            description: String::new(),
+            working_dir: String::new(),
+            environment_type: "system".into(),
+            environment_dir: String::new(),
+            executable_dirs: vec![],
+            env: BTreeMap::new(),
+            command: String::new(),
+            shell: String::new(),
+            expected_ports: vec![],
+            notes: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        })?;
+        let document = store.save_document(ServiceDocument {
+            id: String::new(),
+            service_id: service.id.clone(),
+            title: "保留文档".into(),
+            content: "原服务文档".into(),
+            updated_at: String::new(),
+        })?;
+        let item = ContentItem::new(
+            "关联收藏",
+            ContentKind::Application,
+            ContentTarget::ServiceLink {
+                service_id: service.id.clone(),
+            },
+        );
+        let item = store.save_content_item(item)?;
+        assert_eq!(store.content_items()?.len(), 1);
+        let steam = store.save_content_item(ContentItem::new(
+            "游戏",
+            ContentKind::Game,
+            ContentTarget::Steam {
+                app_id: "steam://rungameid/730".into(),
+            },
+        ))?;
+        assert_eq!(
+            steam.target.canonical_uri().as_deref(),
+            Some("steam://run/730")
+        );
+        assert_eq!(store.content_preferences()?, serde_json::json!({}));
+        store.save_content_preferences(serde_json::json!({
+            "agentId": "codex",
+            "voiceEnabled": true
+        }))?;
+        assert_eq!(store.content_preferences()?["agentId"], "codex");
+
+        let identity = ProcessIdentity {
+            pid: 7788,
+            created_at: "generation-a".into(),
+        };
+        let local = store.save_content_item(ContentItem::new(
+            "本地应用",
+            ContentKind::Game,
+            ContentTarget::LocalApp {
+                path: folder.clone(),
+                args: vec![],
+                start_dir: String::new(),
+            },
+        ))?;
+        store.bind_content_application(
+            &local.id,
+            &ContentApplicationBinding {
+                identity: identity.clone(),
+                target_path: folder.clone(),
+                bound_at: timestamp_now(),
+            },
+        )?;
+        let duplicate = store.save_content_item(ContentItem::new(
+            "重复应用",
+            ContentKind::Application,
+            ContentTarget::LocalApp {
+                path: folder.clone(),
+                args: vec![],
+                start_dir: String::new(),
+            },
+        ))?;
+        assert!(store
+            .bind_content_application(
+                &duplicate.id,
+                &ContentApplicationBinding {
+                    identity,
+                    target_path: folder.clone(),
+                    bound_at: timestamp_now(),
+                },
+            )
+            .is_err());
+        store.delete_content_item(&item.id)?;
+        assert_eq!(store.documents(&service.id)?[0].id, document.id);
+        assert!(store.service(&service.id).is_ok());
+        // 重复实例接管被拒绝，但用户创建的独立收藏记录仍保留，不能顺带删除。
+        assert_eq!(store.content_items()?.len(), 3);
+        assert!(store.content_application_binding(&duplicate.id)?.is_none());
+        let connection = store.connection()?;
+        assert_eq!(
+            schema_version(&connection).map_err(|e| e.to_string())?,
+            SCHEMA_VERSION
+        );
+        drop(connection);
+        drop(store);
+        std::fs::remove_dir_all(directory)
+            .map_err(|error| format!("无法清理内容库测试数据库：{error}"))?;
         Ok(())
     }
 }

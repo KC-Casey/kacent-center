@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Check, ExternalLink, Folder, X } from 'lucide-react';
 import type { AttachExternalRequest, DiscoveredProcess, ServiceConfig } from '../types';
 import Modal from './Modal';
+import Select from './Select';
 import { trapDialogFocus } from './focusTrap';
 
 interface Props {
@@ -110,7 +111,7 @@ export default function AttachExternalDrawer({ process, existingServices, onClos
             {!identityUsable && <div className="form-error" role="alert">缺少可靠进程身份，接入操作已禁用。</div>}
           </section>
           <section className="form-section"><div className="section-heading"><h3>应用服务记录</h3><p>可复用先前退出的外部服务记录。</p></div>
-            <label className="field"><span>现有外部服务记录</span><select value={existingServiceId} onChange={(event) => chooseExisting(event.target.value)}><option value="">新建外部服务记录</option>{externalOptions.map((service) => <option key={service.id} value={service.id}>{service.name} · PID {service.external?.identity.pid ?? '未知'}</option>)}</select><small>选择现有记录会更新它关联的进程实例。</small></label>
+            <label className="field"><span>现有外部服务记录</span><Select value={existingServiceId} onChange={chooseExisting} options={[{ value: '', label: '新建外部服务记录' }, ...externalOptions.map((service) => ({ value: service.id, label: `${service.name} · PID ${service.external?.identity.pid ?? '未知'}` }))]} /><small>选择现有记录会更新它关联的进程实例。</small></label>
             <label className="field"><span>显示名称 <b aria-hidden="true">*</b></span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：本地开发 API" /></label>
             <label className="field"><span>工作目录</span><div className="path-input-row"><input value={workingDir} onChange={(event) => setWorkingDir(event.target.value)} placeholder="可留空，稍后补充" /><button className="icon-button" type="button" aria-label="选择工作目录" title="选择目录" onClick={() => void selectDirectory()}><Folder size={17} /></button><button className="button secondary compact" type="button" onClick={() => void selectDirectory()}>选择</button></div><small>独立终端、Agent 与托管转换需要工作目录。</small>{process.instance.workingDir && process.instance.workingDir !== workingDir && <small className="external-suggestion">扫描快照建议：<code>{process.instance.workingDir}</code><button className="text-button" type="button" onClick={() => setWorkingDir(process.instance.workingDir!)}>使用建议目录</button></small>}</label>
             <label className="field"><span>启动命令</span><input className="mono-input" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="可留空，转换托管前再补齐" /><small>命令只保存在记录中，不会在接入时运行。</small></label>

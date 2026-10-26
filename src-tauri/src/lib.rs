@@ -1,9 +1,15 @@
 pub mod applications;
+pub mod content;
+pub mod content_agent;
+pub mod content_control;
+pub mod content_mcp;
+pub mod content_models;
 pub mod discovery;
 pub mod external;
 pub mod models;
 pub mod projects;
 pub mod runtime;
+pub mod speech;
 pub mod static_sites;
 pub mod store;
 
@@ -26,6 +32,9 @@ use tauri::{
 };
 
 struct AppState {
+    content: Arc<content_control::ContentController>,
+    speech: Arc<speech::SpeechManager>,
+    content_bridge_error: Option<String>,
     store: Arc<Store>,
     runtime: Arc<RuntimeManager>,
     external: Arc<external::ExternalManager>,
@@ -48,6 +57,241 @@ impl AppState {
             .or_default()
             .clone())
     }
+}
+
+#[tauri::command]
+async fn content_snapshot(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let content = state.content.content.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(serde_json::json!({"items":content.items()?,"statuses":content.statuses()?}))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn content_save(
+    state: State<'_, AppState>,
+    item: content_models::ContentItem,
+    stamp: Option<String>,
+) -> Result<content_models::ContentItem, String> {
+    if state.quitting.load(Ordering::SeqCst) {
+        return Err("中心正在退出".into());
+    }
+    let content = state.content.content.clone();
+    tauri::async_runtime::spawn_blocking(move || content.save_checked(item, stamp.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn content_associate(
+    state: State<'_, AppState>,
+    content_id: String,
+    identity: ProcessIdentity,
+) -> Result<(), String> {
+    if state.quitting.load(Ordering::SeqCst) {
+        return Err("中心正在退出".into());
+    }
+    let content = state.content.content.clone();
+    tauri::async_runtime::spawn_blocking(move || content.associate(&content_id, identity))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+fn content_tasks(state: State<'_, AppState>) -> Vec<content_control::ActionTask> {
+    state.content.tasks()
+}
+#[tauri::command]
+async fn content_submit(
+    state: State<'_, AppState>,
+    plan: content_control::ActionPlan,
+    request_id: String,
+) -> Result<content_control::ActionTask, String> {
+    let controller = state.content.clone();
+    tauri::async_runtime::spawn_blocking(move || controller.submit(request_id, "manual", plan))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn content_plan(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    input: String,
+    agent_id: String,
+    request_id: String,
+) -> Result<content_control::ActionTask, String> {
+    let agent = state.store.agent(&agent_id)?;
+    let controller = state.content.clone();
+    let (task, fresh) = controller.begin(request_id, "agent", input.clone())?;
+    if fresh {
+        let id = task.id.clone();
+        let cancelled = task.cancelled.clone();
+        // 模型任务独立运行，前端可立即展示进度并取消。只传名称、别名及分类，不传文件正文、备注或环境。
+        tauri::async_runtime::spawn_blocking(move || {
+            let outcome = (|| {
+                let candidates=controller.content.items()?.into_iter().map(|item|serde_json::json!({"id":item.id,"name":item.name,"kind":item.kind,"aliases":item.aliases,"group":item.group,"tags":item.tags})).collect::<Vec<_>>();
+                let plan =
+                    content_agent::plan(&agent, &input, &serde_json::json!(candidates), cancelled)?;
+                controller.accept_plan(&id, plan)
+            })();
+            if let Err(error) = outcome {
+                controller.fail(&id, error);
+            }
+            if let Ok(task) = controller.task(&id) {
+                let _ = app.emit("content-task", task);
+            }
+        });
+    }
+    Ok(task)
+}
+#[tauri::command]
+async fn content_confirm(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    task_id: String,
+    index: usize,
+) -> Result<content_control::ActionTask, String> {
+    if window.label() != "main" {
+        return Err("确认只能来自中心主窗口".into());
+    }
+    let controller = state.content.clone();
+    tauri::async_runtime::spawn_blocking(move || controller.confirm(&task_id, index))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn content_choose(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    task_id: String,
+    index: usize,
+    content_id: String,
+) -> Result<content_control::ActionTask, String> {
+    if window.label() != "main" {
+        return Err("目标选择只能来自中心主窗口".into());
+    }
+    let controller = state.content.clone();
+    tauri::async_runtime::spawn_blocking(move || controller.choose(&task_id, index, &content_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+fn content_cancel(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<content_control::ActionTask, String> {
+    state.content.cancel(&task_id)
+}
+#[tauri::command]
+async fn content_save_form(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    task_id: String,
+    index: usize,
+    item: content_models::ContentItem,
+) -> Result<content_models::ContentItem, String> {
+    if window.label() != "main" {
+        return Err("表单确认只能来自中心主窗口".into());
+    }
+    let controller = state.content.clone();
+    tauri::async_runtime::spawn_blocking(move || controller.save_form(&task_id, index, item))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn content_agent_capabilities(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let profiles = state.store.agents()?;
+    tauri::async_runtime::spawn_blocking(move || serde_json::Value::Array(content_agent::capabilities(&profiles).into_iter().map(|c|serde_json::json!({"agentId":c.id,"name":c.name,"terminalAvailable":c.available,"centerSupported":c.mode=="isolatedCli","centerAvailable":c.can_plan,"mcpSupported":c.mode=="isolatedCli"||c.mode=="externalMcp","reason":c.reason.or_else(||Some(c.limitations.join("；"))),"executable":c.resolved_path})).collect())).await.map_err(|e|e.to_string())
+}
+#[tauri::command]
+fn content_preferences(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let value = state.store.content_preferences()?;
+    Ok(
+        serde_json::json!({"agentId":value["agentId"].as_str().unwrap_or(""),"voiceEnabled":value["voiceEnabled"].as_bool().unwrap_or(false)}),
+    )
+}
+#[tauri::command]
+fn save_content_preferences(
+    state: State<'_, AppState>,
+    preferences: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let agent_id = preferences["agentId"]
+        .as_str()
+        .ok_or("缺少默认 Agent 配置")?;
+    if !agent_id.is_empty() {
+        state.store.agent(agent_id)?;
+    }
+    let voice = preferences["voiceEnabled"]
+        .as_bool()
+        .ok_or("语音开关无效")?;
+    state
+        .store
+        .save_content_preferences(serde_json::json!({"agentId":agent_id,"voiceEnabled":voice}))
+}
+#[tauri::command]
+fn content_mcp_config(agent_id: String) -> Result<serde_json::Value, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let guide = content_agent::mcp_config_guide(&executable.to_string_lossy());
+    Ok(guide.get(&agent_id).cloned().unwrap_or(guide))
+}
+#[tauri::command]
+async fn content_mcp_check(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    if let Some(error) = &state.content_bridge_error {
+        return Err(error.clone());
+    }
+    tauri::async_runtime::spawn_blocking(content_mcp::connection_check)
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+fn speech_status(state: State<'_, AppState>) -> serde_json::Value {
+    let status = state.speech.status();
+    serde_json::json!({"state":status.state,"modelReady":status.model_available,"progress":status.progress.unwrap_or(0),"durationSeconds":status.duration_ms.unwrap_or(0)/1000,"error":status.error})
+}
+#[tauri::command]
+async fn speech_start(state: State<'_, AppState>) -> Result<(), String> {
+    if !state.store.content_preferences()?["voiceEnabled"]
+        .as_bool()
+        .unwrap_or(false)
+    {
+        return Err("请先在设置中启用语音".into());
+    }
+    let speech = state.speech.clone();
+    tauri::async_runtime::spawn_blocking(move || speech.start())
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn speech_cancel(state: State<'_, AppState>) -> Result<(), String> {
+    let speech = state.speech.clone();
+    tauri::async_runtime::spawn_blocking(move || speech.cancel())
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn speech_finish(state: State<'_, AppState>) -> Result<String, String> {
+    let speech = state.speech.clone();
+    tauri::async_runtime::spawn_blocking(move || speech.finish())
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn speech_download(state: State<'_, AppState>) -> Result<speech::SpeechModelInfo, String> {
+    let speech = state.speech.clone();
+    tauri::async_runtime::spawn_blocking(move || speech.download_model())
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn speech_import(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<speech::SpeechModelInfo, String> {
+    let speech = state.speech.clone();
+    tauri::async_runtime::spawn_blocking(move || speech.import_model(PathBuf::from(path)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -165,7 +409,11 @@ async fn save_service(
         if let LaunchConfig::DesktopApp { path, .. } = &mut service.launch {
             *path = applications::inspect_path(path)?.path;
         }
-        let saved = store.save_service(service)?;
+        let saved = if service.kind == "desktopApp" {
+            applications.save_service_config(service)?
+        } else {
+            store.save_service(service)?
+        };
         if clear_binding {
             store.clear_application_binding(&saved.id)?;
             applications.forget(&saved.id);
@@ -730,6 +978,8 @@ async fn quit_app(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(
     if state.quitting.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
+    state.content.shutdown();
+    let _ = state.speech.cancel();
     let runtime = state.runtime.clone();
     let static_sites = state.static_sites.clone();
     let lifecycle = state.lifecycle.clone();
@@ -745,6 +995,7 @@ async fn quit_app(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(
     .and_then(|r| r);
     if let Err(error) = result {
         state.quitting.store(false, Ordering::SeqCst);
+        state.content.resume();
         return Err(error);
     }
     app.exit(0);
@@ -775,7 +1026,10 @@ fn show_window(app: &tauri::AppHandle) {
 }
 pub fn run() {
     // Windows PTY 引导进程必须在 Tauri 与单实例插件初始化前运行，不能被识别为第二个应用实例。
-    if static_sites::run_worker_if_requested() || runtime::run_worker_if_requested() {
+    if content_mcp::run_stdio_if_requested()
+        || static_sites::run_worker_if_requested()
+        || runtime::run_worker_if_requested()
+    {
         return;
     }
     let app = tauri::Builder::default()
@@ -809,7 +1063,15 @@ pub fn run() {
                 Some(app.handle().clone()),
             );
             applications.start_monitor();
+            let content_manager = content::ContentManager::new(store.clone(), applications.clone());
+            let content = content_control::ContentController::new(content_manager);
+            let content_bridge_error =
+                content_mcp::start(content.clone(), &data_dir, Some(app.handle().clone())).err();
+            let speech = speech::SpeechManager::new(data_dir);
             app.manage(AppState {
+                content,
+                speech,
+                content_bridge_error,
                 store,
                 runtime,
                 external,
@@ -857,6 +1119,27 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            content_snapshot,
+            content_save,
+            content_associate,
+            content_tasks,
+            content_submit,
+            content_plan,
+            content_confirm,
+            content_choose,
+            content_cancel,
+            content_save_form,
+            content_agent_capabilities,
+            content_preferences,
+            save_content_preferences,
+            content_mcp_config,
+            content_mcp_check,
+            speech_status,
+            speech_start,
+            speech_cancel,
+            speech_finish,
+            speech_download,
+            speech_import,
             bootstrap,
             discovery_snapshot,
             platform_info,

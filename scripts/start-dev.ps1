@@ -213,6 +213,9 @@ function Test-Toolchain {
     $script:NodePath = Find-ExecutablePath -Name 'node.exe'
     $script:PnpmPath = Find-ExecutablePath -Name 'pnpm.cmd'
     Add-CargoBinToProcessPathIfNeeded
+    if ($null -eq (Find-ExecutablePath -Name 'cmake.exe')) {
+        Add-Problem '本地语音引擎需要 CMake；请安装 CMake 并加入 PATH。'
+    }
 
     if ($null -eq $script:NodePath) {
         Add-Problem '找不到 Node.js（node.exe）；需要 Node.js 22.12 或更高版本。'

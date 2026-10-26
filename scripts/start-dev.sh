@@ -5,14 +5,17 @@ fail() { printf '\n启动失败：%s\n' "$1" >&2; exit 1; }
 case "${1:-}" in
   '') check_only=0 ;;
   --check) check_only=1 ;;
-  --help) printf '用法：./启动调试.command [--check]\n--check 仅检查环境，不安装依赖、不启动应用。\n'; exit 0 ;;
+  --help) printf '用法：./start-dev.command [--check]\n--check 仅检查环境，不安装依赖、不启动应用。\n'; exit 0 ;;
   *) fail '未知参数。可使用 --check 检查环境，或不带参数启动。' ;;
 esac
 [[ $# -le 1 ]] || fail '只支持一个可选的 --check 参数。'
-[[ "$(uname -s)" == Darwin ]] || fail '此脚本用于 macOS；Windows 请双击“启动调试.bat”。'
+[[ "$(uname -s)" == Darwin ]] || fail '此脚本用于 macOS；Windows 请双击“start-dev.bat”。'
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_dir"
 [[ -f package.json && -f src-tauri/Cargo.toml ]] || fail '项目文件不完整，请保留启动脚本与源码的目录结构。'
+
+# 优先启用项目内持久保存的工具；环境同时传递给 pnpm、Tauri 和 Cargo 子进程。
+source "$project_dir/scripts/dev-env.sh"
 
 prepend_path() {
   [[ -d "$1" ]] && export PATH="$1:$PATH"
@@ -50,24 +53,55 @@ if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; the
 fi
 rust_ready() { cargo --version >/dev/null 2>&1 && rustc --version >/dev/null 2>&1; }
 if ! rust_ready; then
-  # 首次实现时使用过隔离的临时工具链；本机尚未安装常规 Rust 时可复用它。
-  # 只修改本次启动进程的环境，而且绝不覆盖用户显式配置的 Cargo/Rustup 目录。
-  if [[ -z "${CARGO_HOME:-}" && -z "${RUSTUP_HOME:-}" \
-        && -O /private/tmp/kacent-cargo && -O /private/tmp/kacent-rustup \
-        && -x /private/tmp/kacent-cargo/bin/rustc \
-        && -d /private/tmp/kacent-rustup/toolchains ]] \
-      && env CARGO_HOME=/private/tmp/kacent-cargo RUSTUP_HOME=/private/tmp/kacent-rustup \
-         /private/tmp/kacent-cargo/bin/rustc --version >/dev/null 2>&1; then
-    export CARGO_HOME=/private/tmp/kacent-cargo
-    export RUSTUP_HOME=/private/tmp/kacent-rustup
-    prepend_path "$CARGO_HOME/bin"
-    printf '使用本机已有的临时 Rust 工具链；临时目录被系统清理后需安装常规 Rust。\n'
-  else
-    fail '未找到可用的 Rust 工具链。请按 README 安装 Rust 稳定版；已有 rustup 时可运行 rustup default stable。'
-  fi
+  fail '未找到可用的 Rust 工具链。请按 README 安装项目内 Rust；显式设置过 CARGO_HOME 或 RUSTUP_HOME 时请检查对应目录。'
 fi
 rust_ready || fail 'Rust 工具链仍无法运行，请检查 Cargo 与 rustc。'
 xcode-select -p >/dev/null 2>&1 || fail '缺少 Xcode Command Line Tools。请先运行 xcode-select --install 完成安装。'
+# whisper.cpp 通过 CMake 编译 C++ 源码。部分 Command Line Tools 版本不会把
+# SDK 中的 libc++ 头文件自动加入搜索路径，因此先用 xcrun 找到当前 SDK，
+# 再用一个只包含标准库头文件的 clang++ 探测决定是否需要补 CXXFLAGS。
+command -v xcrun >/dev/null 2>&1 || fail '未找到 xcrun。请安装或重新选择 Xcode Command Line Tools。'
+macos_sdk="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)" \
+  || fail '无法定位 macOS SDK。请检查 Xcode Command Line Tools 的安装状态。'
+[[ -d "$macos_sdk" ]] || fail "macOS SDK 路径无效：$macos_sdk"
+clangxx="$(xcrun --sdk macosx --find clang++ 2>/dev/null)" \
+  || fail '未找到 clang++。请安装或重新选择 Xcode Command Line Tools。'
+[[ -x "$clangxx" ]] || fail "clang++ 路径无效：$clangxx"
+
+# 用户显式设置 SDKROOT 时优先沿用；该路径无法通过探测时回退到 xcrun 的当前 SDK。
+selected_sdk="${SDKROOT:-$macos_sdk}"
+cpp_headers_probe() {
+  local sdk="$1"
+  shift
+  printf '%s\n' \
+    '#include <array>' \
+    '#include <mutex>' \
+    'int main(){ std::array<int, 1> a{}; std::mutex m; (void)a; (void)m; }' \
+    | "$clangxx" -isysroot "$sdk" "$@" -std=c++17 -x c++ -fsyntax-only - >/dev/null 2>&1
+}
+if ! cpp_headers_probe "$selected_sdk"; then
+  selected_sdk="$macos_sdk"
+fi
+export SDKROOT="$selected_sdk"
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+
+if ! cpp_headers_probe "$SDKROOT"; then
+  cxx_header_dir="$SDKROOT/usr/include/c++/v1"
+  [[ -d "$cxx_header_dir" ]] || fail \
+    "clang++ 无法找到 C++ 标准库头文件（<array>、<mutex>），且 SDK 中不存在：$cxx_header_dir"
+  cpp_headers_probe "$SDKROOT" -isystem "$cxx_header_dir" || fail \
+    'clang++ 无法编译 C++ 标准库头文件。请更新 Xcode Command Line Tools 后重试。'
+  case " ${CXXFLAGS:-} " in
+    *"$cxx_header_dir"*) ;;
+    *) export CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }-isystem $cxx_header_dir" ;;
+  esac
+  printf '已为本次调试补充 C++ 标准库头文件路径：%s\n' "$cxx_header_dir"
+fi
+printf 'macOS SDK：%s\nclang++：%s\n' "$SDKROOT" "$clangxx"
+# whisper.cpp 随应用编译，需要 CMake；项目内版本已由 dev-env.sh 加入 PATH。
+command -v cmake >/dev/null 2>&1 || fail '本地语音引擎需要 CMake。请安装 CMake 并加入 PATH，再重新启动。'
+cmake --version >/dev/null 2>&1 || fail 'CMake 无法运行，请检查项目内或 PATH 中的 CMake 安装。'
+
 
 # 调试数据库与正式安装版分开；用户显式指定 KACENT_DATA_DIR 时沿用其选择。
 export KACENT_DATA_DIR="${KACENT_DATA_DIR:-$project_dir/.local-dev/data}"
@@ -76,6 +110,7 @@ node --version
 printf 'pnpm %s\n' "$pnpm_version"
 cargo --version
 rustc --version
+cmake --version
 [[ "$check_only" -eq 0 ]] || exit 0
 
 mkdir -p "$KACENT_DATA_DIR" || fail '无法创建调试数据目录，请检查目录权限。'

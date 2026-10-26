@@ -30,6 +30,10 @@ tempfile = "3"
 axum = "0.8"
 tower-http = { version = "0.6", features = ["fs"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+cpal = "0.15.3"
+whisper-rs = "0.16.0"
+ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
+sha1 = "0.10.6"
 
 [patch.crates-io]
 portable-pty = { path = "vendor/portable-pty" }

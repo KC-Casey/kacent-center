@@ -1,0 +1,12 @@
+# 禁止把构建机的 CPU 特性写入发布包。whisper-rs-sys 这一版本默认把
+# SSE4.2/AVX/AVX2 等选项直接编译进静态 CPU 后端，并没有在该后端内为每个
+# 指令集生成安全的运行时分派版本；Windows x64 不能假定这些指令集存在，
+# 因此使用 x86-64 基线（系统仍会使用硬件提供的基础 SSE2）。
+[env]
+GGML_NATIVE = { value = "OFF", force = true }
+GGML_SSE42 = { value = "OFF", force = true }
+GGML_AVX = { value = "OFF", force = true }
+GGML_AVX2 = { value = "OFF", force = true }
+GGML_FMA = { value = "OFF", force = true }
+GGML_F16C = { value = "OFF", force = true }
+GGML_BMI2 = { value = "OFF", force = true }

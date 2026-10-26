@@ -8,6 +8,7 @@ import {
   resolveTerminalAppearance,
   validateTerminalAppearance,
 } from '../terminalAppearance';
+import Select from './Select';
 import './TerminalAppearanceEditor.css';
 import '@xterm/xterm/css/xterm.css';
 
@@ -199,7 +200,7 @@ export default function TerminalAppearanceEditor({ value, onChange, systemTheme 
         <label className="kc-terminal-form-field kc-terminal-font-field" htmlFor="terminal-font-family"><span>字体</span><input id="terminal-font-family" type="text" value={value.fontFamily} onChange={event => patch({ fontFamily: event.target.value })} placeholder="例如：SFMono-Regular, monospace" /></label>
         <label className="kc-terminal-form-field" htmlFor="terminal-font-size"><span>字号（9–32）</span><input id="terminal-font-size" type="number" min={9} max={32} step={1} value={Number.isFinite(value.fontSize) ? value.fontSize : ''} onChange={event => patch({ fontSize: Number(event.target.value) })} /></label>
         <label className="kc-terminal-form-field" htmlFor="terminal-line-height"><span>行高（1–2）</span><input id="terminal-line-height" type="number" min={1} max={2} step={0.05} value={Number.isFinite(value.lineHeight) ? value.lineHeight : ''} onChange={event => patch({ lineHeight: Number(event.target.value) })} /></label>
-        <label className="kc-terminal-form-field" htmlFor="terminal-cursor-style"><span>光标样式</span><select id="terminal-cursor-style" value={value.cursorStyle} onChange={event => patch({ cursorStyle: event.target.value as TerminalAppearance['cursorStyle'] })}><option value="block">方块</option><option value="underline">下划线</option><option value="bar">竖线</option></select></label>
+        <label className="kc-terminal-form-field" htmlFor="terminal-cursor-style"><span>光标样式</span><Select id="terminal-cursor-style" value={value.cursorStyle} onChange={next => patch({ cursorStyle: next as TerminalAppearance['cursorStyle'] })} options={[{ value: 'block', label: '方块' }, { value: 'underline', label: '下划线' }, { value: 'bar', label: '竖线' }]} /></label>
         <label className="kc-terminal-checkbox-field" htmlFor="terminal-cursor-blink"><input id="terminal-cursor-blink" type="checkbox" checked={value.cursorBlink} onChange={event => patch({ cursorBlink: event.target.checked })} /><span>光标闪烁</span></label>
       </div>
     </section>
